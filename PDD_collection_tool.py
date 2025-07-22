@@ -1,17 +1,11 @@
 ﻿# -*- coding: utf-8 -*-
-"""
-重构点：
-1. 使用 undetected_chromedriver 绕过 Selenium 检测
-2. 使用 selenium-wire 拦截响应并修改含 selenium 检测的 JS 内容
-3. 替换 navigator.webdriver 等关键检测点
-4. 维持原始功能结构（如登录、搜索、解析、保存 Excel 等）
-"""
+
 import time
 import random
 import re
 import requests
 import os
-import sys
+import shutil
 
 from io import BytesIO
 from PIL import Image
@@ -32,7 +26,6 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 
 from pyquery import PyQuery as pq
 from openpyxl import Workbook
-from openpyxl.drawing.image import Image as ExcelImage
 from BaseScraper  import BaseScraper
 
 
@@ -45,6 +38,7 @@ class PDDSpider(BaseScraper):
         self.max_items = max_items
         self.insert_image = insert_image
         self.count = 2
+        self.logger = self._init_logger()
         self.driver = self.init_driver()
         self.wait = WebDriverWait(self.driver, 10)
         self.excel = Workbook()
@@ -71,10 +65,12 @@ class PDDSpider(BaseScraper):
         try:
             actions = ActionChains(self.driver)
             actions.move_to_element(element).click().perform()
-            print("模拟鼠标点击成功")
+            self.logger.info(print("模拟鼠标点击成功"))
             return True
         except Exception as e:
-            print("模拟鼠标点击失败:", e)
+            self.logger.error(print("模拟鼠标点击失败:", e))
+            self.save_page_html("error_page.html")
+
             return False
 
     def click_fake_search_box(self, timeout=10):
@@ -89,7 +85,9 @@ class PDDSpider(BaseScraper):
             return self.simulate_click(element)
 
         except Exception as e:
-            print("鼠标模拟点击失败:", e)
+            self.logger.error(print("搜索框模拟点击失败:", e))
+            self.save_page_html("error_page.html")
+
             return False
 
     def search(self):
@@ -125,7 +123,9 @@ class PDDSpider(BaseScraper):
             print("搜索成功")
 
         except Exception as e:
-            print("搜索失败:", repr(e))
+            self.log.err(print("搜索失败:", repr(e)))
+            self.save_page_html("error_page.html")
+
 
 
 
@@ -134,15 +134,14 @@ class PDDSpider(BaseScraper):
         seen_titles = set()
         processed_count = 0
 
-        for _ in range(30):
+        for _ in range(30):  # 最多下滑 30 次
             items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
             for index in range(len(items)):
                 if len(results) >= max_items:
                     break
 
                 try:
-                    # 防止 stale element，循环内重新获取
-                    items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
+                    items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')  # 每次都重新获取（防止 stale）
                     if index >= len(items):
                         continue
 
@@ -150,100 +149,67 @@ class PDDSpider(BaseScraper):
                     item_html = elem.get_attribute('outerHTML')
                     item_doc = pq(item_html)
 
+                    # 提取标题并去重
                     title = item_doc('div._3ANzdjkc').text().strip()
                     if not title or title in seen_titles:
                         continue
                     seen_titles.add(title)
 
+                    # 提取价格（兼容多种价格结构）
                     price = ''
-                    # 第一种情况：处理价格为整数和小数部分分开的情况
                     price_dec_elem = item_doc('span._2aP8LGPL')
                     if price_dec_elem:
                         price_int = price_dec_elem.prev().text()
                         price_dec = price_dec_elem.text()
                         price = f"{price_int}{price_dec}"
-
-                    # 如果第一种情况失败，尝试第二种情况
                     elif not price:
                         price_elem = item_doc('span._3_U04GgA')
                         if price_elem:
                             coupon_tag = price_elem('span._2nKWnaqa')
-                            if coupon_tag:  # 如果包含"券后"，跳过
+                            if coupon_tag:
                                 price = price_elem('span._3f_Cp5GQ + span').text()
                             else:
-                                # 如果没有"券后"，直接获取价格
                                 price = price_elem('span._3f_Cp5GQ + span').text()
 
-                        # 第二种情况提取后，检查价格格式是否符合 xx.xx 或 xx
-                        if price and (price.startswith('¥') or price.endswith('.xx')):
-                            # 如果符合条件，可以进入下一种方式
-                            pass
-                        elif not price:  # 如果仍未提取到价格，进入下一种情况
-                            price = price
-
-                    # 如果 price 仍为空，尝试第三种情况
-                    elif not price:
-                        price_elem = item_doc('span._3_U04GgA')
-                        if price_elem:
-                            price = price_elem('span._3f_Cp5GQ + span').text()
-
-                        # 第三种情况提取后，检查价格格式是否符合 xx.xx 或 xx
-                        if price and (price.startswith('¥') or price.endswith('.xx')):
-                            # 如果符合条件，继续下一步
-                            print(price)
-                            pass
-                        elif not price:  # 如果仍未提取到价格，进入下一种情况
-                            price = price
-                            print(price)
-
+                    # 提取标签
                     tag_list = [tag.text() for tag in item_doc('div._299OVZvt > div').items()]
                     tags_str = ' '.join(tag_list)
 
+                    # 提取图片链接
                     img_elem = item_doc('div._1o7l_Qm- img')
                     img_url = img_elem.attr('src') or img_elem.attr('data-src') or img_elem.attr('data-lazy')
 
-                    # 获取销量 (从 span 中提取)
+                    # 提取销量
                     deal_num_elem = item_doc('div[style*="width: 255px;"] span')
                     deal_num_text = deal_num_elem.text().strip()
-                    deal_num = ''.join([ch for ch in deal_num_text if ch.isdigit()])  # 提取数字部分
+                    deal_num = ''.join([ch for ch in deal_num_text if ch.isdigit()])
                     if not deal_num:
-                        deal_num = 0  # 如果没有销量数据，设为 0
+                        deal_num = 0
 
-
-                    # 调用 get_more 获取评论数、店铺名、包邮
-                    comment_count, shop_name, postage_info,shop_url= self.get_more(elem)
-
-                    # 处理如果 comment_count 没有返回的情况
+                    # 进入详情页或悬浮店铺卡片，获取更多信息
+                    comment_count, shop_name, postage_info, shop_url = self.get_more(elem)
                     if comment_count is None:
-                        comment_count = 0  # 给评论数设置默认值
+                        comment_count = 0
 
-                    # 额外下载图片数据，保存 BytesIO
-                    img_data = None
-                    if img_url:
-                        try:
-                            headers = {'User-Agent': 'Mozilla/5.0'}
-                            resp = requests.get(img_url, headers=headers, timeout=10)
-                            if resp.status_code == 200:
-                                img_data = BytesIO(resp.content)
-                        except Exception as e:
-                            print(f"图片下载异常: {e}")
+                    # 下载图片，保存本地路径（新增）
+                    img_path = None
+                    if self.insert_image and img_url:
+                        img_path = self.download_image(img_url, title)
 
+                    # 汇总结果
                     result = {
                         'title': title,
                         'price': price,
-                        'deal_num': deal_num,  # 销量
-                        'shop_url': shop_url,  # 店铺连接
-                        'comment_count': comment_count,  # 评论数
+                        'deal_num': deal_num,
+                        'shop_url': shop_url,
+                        'comment_count': comment_count,
                         'shop_name': shop_name,
                         'postage_info': postage_info,
                         'tags': tags_str,
                         'img_url': img_url,
-                        'img_data': img_data
+                        'img_path': img_path  # 本地图片路径，供 Excel 插图使用
                     }
-                    print(result)
                     results.append(result)
-
-                    print(f"[+] 采集商品：{title}（销量：{deal_num}，评论数：{comment_count}）")
 
                     processed_count += 1
                     if processed_count % 2 == 0:
@@ -251,85 +217,82 @@ class PDDSpider(BaseScraper):
                         time.sleep(1)
 
                 except Exception as e:
-                    print(f"[!] 处理商品失败: {e}")
+                    self.logger.warning(print(f"[!] 处理商品失败: {e}"))
                     continue
 
             if len(results) >= max_items:
                 break
 
+            # 向下滚动加载更多
             self.scroll_step_down(base_step=1200)
             time.sleep(1)
 
         print(f"\n共提取到 {len(results)} 个商品（上限：{max_items}）")
-    
-        # 调用保存 Excel 方法
+
+        self.clear_image_cache('images')  # 清空 image 文件夹缓存
 
         return results
 
-    def save_to_excel(self, results, filename='output.xlsx'):
+    def save_to_excel(self, results, filename='results.xlsx'):
         wb = Workbook()
         ws = wb.active
-        ws.title = '拼多多商品'
+        ws.title = '商品信息'
 
-        # 根据 parse_all_showcases 的返回数据，调整表头顺序
-        headers = ['标题', '价格', '成交量', '店铺链接', '评论数量', '店铺名称', '包邮信息', '标签', '图片']
+        # 表头
+        headers = ['标题', '价格', '成交量', '店铺连接', '评论数量', '店铺名称', '包邮信息', '标签', '图片']
         ws.append(headers)
 
-        # 设置列宽
-        col_widths = [30, 12, 10, 20, 20, 30, 20, 20]  # 图片列和其他列的宽度
-        for i, width in enumerate(col_widths, 1):
-            ws.column_dimensions[get_column_letter(i)].width = width
+        # 设置图片插入列列宽（第9列）
+        img_col_letter = 'I'
+        ws.column_dimensions[img_col_letter].width = 15
 
-        img_col_letter = get_column_letter(9)  # 图片列，调整为第 9 列
-        ws.column_dimensions[img_col_letter].width = 18  # 给图片列留宽度
-
-        # 遍历 results，将数据写入 Excel
         for i, item in enumerate(results, start=2):
             ws.cell(row=i, column=1, value=item['title'])
             ws.cell(row=i, column=2, value=item['price'])
             ws.cell(row=i, column=3, value=item['deal_num'])
-            ws.cell(row=i, column=4).value = str(item['shop_url'])
+            ws.cell(row=i, column=4, value=str(item['shop_url']))
             ws.cell(row=i, column=5, value=item['comment_count'])
             ws.cell(row=i, column=6, value=item['shop_name'])
             ws.cell(row=i, column=7, value=item['postage_info'])
             ws.cell(row=i, column=8, value=item['tags'])
 
-            img_url = item.get('img_url')  # 获取图片链接
+            # 如果开启插图功能
             if self.insert_image:
-                if img_url:
-                    # 调用下载图片的函数，获取图片本地路径
-                    img_path = self.download_image(img_url, item['title'])
-                    if img_path and img_path.lower().endswith(('.jpg', '.jpeg', '.png')):
-                        try:
-                            img = ExcelImage(img_path)
-                            img.width = 80
-                            img.height = 80
-
-                            ws.row_dimensions[i].height = 60  # 调整行高，保证图片显示完整
-                            img.anchor = f'{img_col_letter}{i}'  # 图片插入到第 9 列
-                            ws.add_image(img)
-                        except Exception as e:
-                            print(f"[!] 图片插入Excel失败: {e} | 路径: {img_path}")
-                    else:
-                        print(f"[!] 图片格式不支持或路径无效: {img_path}")
+                img_path = item.get('img_path')
+                if img_path and os.path.exists(img_path):
+                    try:
+                        # 尝试用 Pillow 打开并重新编码为 JPEG（修复部分 JPEG 插入失败问题）
+                        with Image.open(img_path) as img:
+                            rgb_img = img.convert("RGB")
+                            rgb_img.save(img_path, format='JPEG')  # 覆盖原图
+                    
+                        # 插入图片
+                        excel_img = ExcelImage(img_path)
+                        excel_img.width = 80
+                        excel_img.height = 80
+                        ws.row_dimensions[i].height = 60
+                        excel_img.anchor = f'{img_col_letter}{i}'
+                        ws.add_image(excel_img)
+                    except Exception as e:
+                        self.logger.error(print(f"[!] 图片插入失败: {img_path} | 错误: {e}"))
                 else:
-                    print("[!] 无图片链接，跳过图片插入")
+                    self.logger.warning(print(f"[!] 图片路径无效或文件不存在: {img_path}"))
 
-        # 保存文件
+        # 保存 Excel 文件
         wb.save(filename)
-        print(f"Excel文件已保存: {filename}")
+        print(f"[√] 数据已保存到 Excel：{filename}")
 
     def webp_to_png(self, webp_bytes, save_path):
         try:
             img = Image.open(BytesIO(webp_bytes))
             if img.format != 'WEBP':
-                print(f"警告：不是WEBP格式，实际是 {img.format}")
+                self.logger.warning(print(f"警告：不是WEBP格式，实际是 {img.format}"))
             img = img.convert("RGBA")  # 保留透明度
             img.save(save_path, format="PNG")
-            print(f"WEBP图片转换PNG并保存成功: {save_path}")
+            self.logger.info(print(f"WEBP图片转换PNG并保存成功: {save_path}"))
             return save_path
         except Exception as e:
-            print(f"WEBP转PNG失败: {e}")
+            self.logger.warning(print(f"WEBP转PNG失败: {e}"))
             return None
 
     def jpeg_to_jpg(self, jpeg_bytes, save_path):
@@ -338,16 +301,16 @@ class PDDSpider(BaseScraper):
         
             # 检查格式是否为 JPEG
             if img.format != 'JPEG':
-                print(f"警告：不是JPEG格式，实际是 {img.format}")
+                self.logger.warning(print(f"警告：不是JPEG格式，实际是 {img.format}"))
                 return None
 
             # 强制保存为 JPG 格式
             img = img.convert("RGB")
             img.save(save_path, format="JPEG")
-            print(f"JPEG图片转换JPG并保存成功: {save_path}")
+            self.logger.info(print(f"JPEG图片转换JPG并保存成功: {save_path}"))
             return save_path
         except Exception as e:
-            print(f"JPEG转JPG失败: {e}")
+            self.logger.warning(print(f"JPEG转JPG失败: {e}"))
             return None
 
     def download_image(self, img_url, title, save_dir='images'):
@@ -375,7 +338,7 @@ class PDDSpider(BaseScraper):
         try:
             resp = requests.get(img_url, headers=headers, timeout=10)
             if resp.status_code != 200:
-                print(f"图片下载失败，状态码: {resp.status_code} | URL: {img_url}")
+                self.logger.error(print(f"图片下载失败，状态码: {resp.status_code} | URL: {img_url}"))
                 return None
 
             try:
@@ -396,14 +359,14 @@ class PDDSpider(BaseScraper):
                 return path
 
             except UnidentifiedImageError:
-                print(f"[!] 图片格式不支持或路径无效: {img_url}")
+                self.logger.error(print(f"[!] 图片格式不支持或路径无效: {img_url}"))
                 return None
             except Exception as e:
-                print(f"[!] 图片处理异常: {e} | URL: {img_url}")
+                self.logger.error(print(f"[!] 图片处理异常: {e} | URL: {img_url}"))
                 return None
 
         except Exception as e:
-            print(f"[!] 图片下载异常: {e} | URL: {img_url}")
+            self.logger.error(print(f"[!] 图片下载异常: {e} | URL: {img_url}"))
             return None
 
     def clean_url(self, url):
@@ -436,7 +399,7 @@ class PDDSpider(BaseScraper):
             else:
                 return url  # 如果没有匹配，返回原始 URL
         except Exception as e:
-            print(f"Error cleaning URL: {e}")
+            self.logger.error(print(f"Error cleaning URL: {e}"))
             return url
 
     def get_more(self, element):
@@ -467,19 +430,19 @@ class PDDSpider(BaseScraper):
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.F2MXl7Xc')))
             except Exception:
-                print("[!] 无法加载评论数量元素，跳过")
+                self.logger.warning(print("[!] 无法加载评论数量元素，跳过"))
                 comment_count = 0  # 默认评论数为0
 
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.BAq4Lzv7')))
             except Exception:
-                print("[!] 无法加载店铺名元素，跳过")
+                self.logger.warning(print("[!] 无法加载店铺名元素，跳过"))
                 shop_name = "无店铺名称"  # 默认店铺名称
 
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.RbQ7MTuU')))
             except Exception:
-                print("[!] 无法加载包邮信息元素，跳过")
+                self.logger.warning(print("[!] 无法加载包邮信息元素，跳过"))
                 postage_info = "无包邮信息"  # 默认包邮信息
 
             # 获取评论数（如果没有评论，这一步会失败）
@@ -501,7 +464,7 @@ class PDDSpider(BaseScraper):
                 )
                 shop_name = shop_name_element.text.strip()
             except Exception as e:
-                print(f"[!] 获取店铺名称失败: {repr(e)}")
+                self.logger.warning(print(f"[!] 获取店铺名称失败: {repr(e)}"))
                 shop_name = "无店铺名称"  # 设置默认值
 
 
@@ -512,11 +475,13 @@ class PDDSpider(BaseScraper):
                 )
                 postage_info = ' '.join([e.text.strip() for e in postage_elements if e.text.strip()])
             except Exception as e:
-                print(f"[!] 获取包邮信息失败: {repr(e)}")
+                self.logger.warning(print(f"[!] 获取包邮信息失败: {repr(e)}"))
                 postage_info = "无包邮信息"  # 设置默认值
 
         except Exception as e:
-            print(f"[!] 获取详情数据失败: {repr(e)}")
+            self.logger.error(print(f"[!] 获取详情数据失败: {repr(e)}"))
+            self.save_page_html("error_page.html")
+
 
         finally:
             self.driver.back()
@@ -529,9 +494,30 @@ class PDDSpider(BaseScraper):
         #print(shop_url)
         return comment_count, shop_name, postage_info, shop_url  # 返回店铺URL
 
+    def clear_image_cache(self,folder='images'):
+        """
+        清空指定文件夹内所有文件和子文件夹，默认清空 image 文件夹
+        """
+        if os.path.exists(folder) and os.path.isdir(folder):
+            for filename in os.listdir(folder):
+                file_path = os.path.join(folder, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)
+                except Exception as e:
+                    self.logger.warning(print(f"[!] 删除缓存文件失败: {file_path} | 错误: {e}"))
+        else:
+            self.logger.error(print(f"[!] 文件夹不存在或不是目录：{folder}"))
+
     def run(self):
-        self.driver.get("https://mobile.pinduoduo.com/")
-        input("请登录拼多多并手动跳转到搜索页面后按回车继续...")
+        try:
+            self.driver.get("https://mobile.pinduoduo.com/")
+            self.log.info(print("登录拼多多成功"))
+        except:
+            self.logger.error(print("登录拼多多失败"))
+        input("请登录拼多多并手动跳转到首页后按回车继续...")
         self.click_fake_search_box()
         self.search()
         data = self.parse_all_showcases(max_items=self.max_items)
