@@ -1,5 +1,4 @@
 ﻿# -*- coding: utf-8 -*-
-
 import time
 import random
 import re
@@ -28,6 +27,7 @@ from pyquery import PyQuery as pq
 from openpyxl import Workbook
 from BaseScraper  import BaseScraper
 
+from AntiScrapingException import CaptchaHandler
 
 
 class PDDSpider(BaseScraper):
@@ -44,7 +44,10 @@ class PDDSpider(BaseScraper):
         self.excel = Workbook()
         self.sheet = self.excel.active
         self._setup_excel()
-
+        self.empty_data_count = 0
+        self.anti_spider_triggered = False
+        self.captcha_handler = CaptchaHandler(self.driver)
+        self.captcha_handler.PDDsliderl()  # 调用风控
 
     def _setup_excel(self):
         # 根据修改后的 save_to_excel 调整表头顺序
@@ -52,23 +55,14 @@ class PDDSpider(BaseScraper):
         for i, header in enumerate(headers, 1):
             self.sheet.cell(row=1, column=i, value=header)
 
-    def human_sleep(self, min_time=1, max_time=2):
-        time.sleep(random.uniform(min_time, max_time))
-
-    def scroll_step_down(self, base_step=800):
-        """模拟人类向下较大幅度滑动"""
-        step = random.randint(base_step - 300, base_step + 300)
-        self.driver.execute_script(f"window.scrollBy(0, {step});")
-        time.sleep(random.uniform(0.8, 1.5))  # 适当增加等待时间，保证加载
-
     def simulate_click(self, element):
         try:
             actions = ActionChains(self.driver)
             actions.move_to_element(element).click().perform()
-            self.logger.info(print("模拟鼠标点击成功"))
+            self.logger.info("模拟鼠标点击成功")
             return True
         except Exception as e:
-            self.logger.error(print("模拟鼠标点击失败:", e))
+            self.logger.error(f"模拟鼠标点击失败:{e}")
             self.save_page_html("error_page.html")
 
             return False
@@ -83,21 +77,29 @@ class PDDSpider(BaseScraper):
 
             # 调用封装好的模拟点击函数
             return self.simulate_click(element)
+            self.captcha_handler.PDDsliderl()
 
         except Exception as e:
-            self.logger.error(print("搜索框模拟点击失败:", e))
+            self.logger.error(f"搜索框模拟点击失败:{e}")
             self.save_page_html("error_page.html")
 
             return False
 
+    def scroll_step_down(self, base_step=800):
+        """模拟人类向下较大幅度滑动"""
+        step = random.randint(base_step - 300, base_step + 300)
+        self.driver.execute_script(f"window.scrollBy(0, {step});")
+        time.sleep(random.uniform(0.8, 1.5))  # 适当增加等待时间，保证加载
+
     def search(self):
         try:
             # 先尝试定位真实搜索框
-            print("尝试定位真实搜索框...")
+            self.logger.info("尝试定位真实搜索框...")
             real_search_box = self.wait.until(EC.presence_of_element_located(
                 (By.XPATH, "//input[@type='search' and contains(@class, '_2bfwu6WT')]")
             ))
         except Exception:
+
             print("请尝试点击首页搜索框进入搜索页面...")
             return  # 找不到搜索框，结束函数，等待用户点击假搜索框进入搜索页
 
@@ -107,7 +109,7 @@ class PDDSpider(BaseScraper):
                 (By.XPATH, "//div[contains(@class, 'RuSDrtii') and text()='搜索']")
             ))
             # 输入关键词
-            print(f"输入关键词: {self.keyword}")
+            self.logger.info(f"输入关键词: {self.keyword}")
             real_search_box.clear()
             real_search_box.send_keys(self.keyword)
 
@@ -120,19 +122,20 @@ class PDDSpider(BaseScraper):
             # 等待 1~2 秒，等待搜索结果加载
             self.human_sleep(1, 2)
 
-            print("搜索成功")
+            self.logger.info("搜索成功")
 
         except Exception as e:
-            self.log.err(print("搜索失败:", repr(e)))
+            self.logger.error(f"搜索失败:{e}")
             self.save_page_html("error_page.html")
 
-
-
-
-    def parse_all_showcases(self, max_items=10):
+    def parse_all_showcases(self, max_items=10 ,platform='PDD',hash_json='hash_store.json'): 
         results = []
         seen_titles = set()
         processed_count = 0
+        # 载入历史哈希
+        hash_set = self.load_hash_set(hash_json)
+
+        previous_results_count = 0  # 记录每次下滑前的商品数
 
         for _ in range(30):  # 最多下滑 30 次
             items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
@@ -141,7 +144,8 @@ class PDDSpider(BaseScraper):
                     break
 
                 try:
-                    items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')  # 每次都重新获取（防止 stale）
+
+                    items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
                     if index >= len(items):
                         continue
 
@@ -149,13 +153,13 @@ class PDDSpider(BaseScraper):
                     item_html = elem.get_attribute('outerHTML')
                     item_doc = pq(item_html)
 
-                    # 提取标题并去重
+                    self.captcha_handler.PDDsliderl()
+
                     title = item_doc('div._3ANzdjkc').text().strip()
                     if not title or title in seen_titles:
                         continue
                     seen_titles.add(title)
 
-                    # 提取价格（兼容多种价格结构）
                     price = ''
                     price_dec_elem = item_doc('span._2aP8LGPL')
                     if price_dec_elem:
@@ -171,32 +175,40 @@ class PDDSpider(BaseScraper):
                             else:
                                 price = price_elem('span._3f_Cp5GQ + span').text()
 
-                    # 提取标签
+
                     tag_list = [tag.text() for tag in item_doc('div._299OVZvt > div').items()]
                     tags_str = ' '.join(tag_list)
 
-                    # 提取图片链接
                     img_elem = item_doc('div._1o7l_Qm- img')
                     img_url = img_elem.attr('src') or img_elem.attr('data-src') or img_elem.attr('data-lazy')
 
-                    # 提取销量
                     deal_num_elem = item_doc('div[style*="width: 255px;"] span')
                     deal_num_text = deal_num_elem.text().strip()
                     deal_num = ''.join([ch for ch in deal_num_text if ch.isdigit()])
                     if not deal_num:
                         deal_num = 0
 
-                    # 进入详情页或悬浮店铺卡片，获取更多信息
+                    # ==== 新增哈希去重 ====
+                    item_dict = {'title': title, 'price': price}
+                    features_url = img_url or ''  # 用图片链接代替特征链接
+
+                    item_hash = self.compute_hash(item_dict, platform, features_url)
+                    if item_hash in hash_set:
+                        self.logger.info(f"[跳过] 已存在的商品: {title}")
+                        continue
+                    hash_set.add(item_hash)
+                    # ======================
+
+                    # 只有通过哈希检查才调用 get_more，节省性能
+
                     comment_count, shop_name, postage_info, shop_url = self.get_more(elem)
                     if comment_count is None:
                         comment_count = 0
 
-                    # 下载图片，保存本地路径（新增）
                     img_path = None
                     if self.insert_image and img_url:
                         img_path = self.download_image(img_url, title)
 
-                    # 汇总结果
                     result = {
                         'title': title,
                         'price': price,
@@ -207,29 +219,43 @@ class PDDSpider(BaseScraper):
                         'postage_info': postage_info,
                         'tags': tags_str,
                         'img_url': img_url,
-                        'img_path': img_path  # 本地图片路径，供 Excel 插图使用
+                        'img_path': img_path
                     }
                     results.append(result)
-
                     processed_count += 1
                     if processed_count % 2 == 0:
                         self.scroll_step_down(base_step=800)
                         time.sleep(1)
 
                 except Exception as e:
-                    self.logger.warning(print(f"[!] 处理商品失败: {e}"))
+                    self.logger.warning(f"[!] 处理商品失败: {e}")
                     continue
 
             if len(results) >= max_items:
                 break
 
-            # 向下滚动加载更多
+            if len(results) == previous_results_count:
+                print(f"[!] 商品数量没有增加，停止继续下滑。")
+                break
+            previous_results_count = len(results)
+
             self.scroll_step_down(base_step=1200)
             time.sleep(1)
 
-        print(f"\n共提取到 {len(results)} 个商品（上限：{max_items}）")
+            # 在每次下滑后检查是否触发风控
+            if getattr(self, 'anti_spider_triggered', False):
+                self.logger.warning("[!] 触发风控，准备终止")
+                confirm = input(f"已抓取 {len(results)} 条数据，是否确认终止并保存？(Y/N)：").strip().lower()
+                if confirm == 'y':
+                    self.logger.warning("[!] 用户确认终止")
+                    return results  # 提前返回数据
+                else:
+                    self.logger.info("[*] 用户选择继续，已复位风控标志")
+                    self.anti_spider_triggered = False
 
-        self.clear_image_cache('images')  # 清空 image 文件夹缓存
+        print(f"\n共提取到 {len(results)} 个商品（上限：{max_items}）")
+        # 保存哈希集，方便下次增量爬取
+        self.save_hash_set(hash_set, hash_json)
 
         return results
 
@@ -280,40 +306,23 @@ class PDDSpider(BaseScraper):
 
         # 保存 Excel 文件
         wb.save(filename)
+
         print(f"[√] 数据已保存到 Excel：{filename}")
 
     def webp_to_png(self, webp_bytes, save_path):
         try:
             img = Image.open(BytesIO(webp_bytes))
             if img.format != 'WEBP':
-                self.logger.warning(print(f"警告：不是WEBP格式，实际是 {img.format}"))
+                self.logger.warning(f"警告：不是WEBP格式，实际是 {img.format}")
             img = img.convert("RGBA")  # 保留透明度
             img.save(save_path, format="PNG")
-            self.logger.info(print(f"WEBP图片转换PNG并保存成功: {save_path}"))
+            self.logger.info(f"WEBP图片转换PNG并保存成功: {save_path}")
             return save_path
         except Exception as e:
-            self.logger.warning(print(f"WEBP转PNG失败: {e}"))
+            self.logger.warning(f"WEBP转PNG失败: {e}")
             return None
 
-    def jpeg_to_jpg(self, jpeg_bytes, save_path):
-        try:
-            img = Image.open(BytesIO(jpeg_bytes))
-        
-            # 检查格式是否为 JPEG
-            if img.format != 'JPEG':
-                self.logger.warning(print(f"警告：不是JPEG格式，实际是 {img.format}"))
-                return None
-
-            # 强制保存为 JPG 格式
-            img = img.convert("RGB")
-            img.save(save_path, format="JPEG")
-            self.logger.info(print(f"JPEG图片转换JPG并保存成功: {save_path}"))
-            return save_path
-        except Exception as e:
-            self.logger.warning(print(f"JPEG转JPG失败: {e}"))
-            return None
-
-    def download_image(self, img_url, title, save_dir='images'):
+    def download_image(self, img_url, title, save_dir='images/PDD'):
         # 确保保存目录存在
         os.makedirs(save_dir, exist_ok=True)
 
@@ -338,7 +347,7 @@ class PDDSpider(BaseScraper):
         try:
             resp = requests.get(img_url, headers=headers, timeout=10)
             if resp.status_code != 200:
-                self.logger.error(print(f"图片下载失败，状态码: {resp.status_code} | URL: {img_url}"))
+                self.logger.error(f"图片下载失败，状态码: {resp.status_code} | URL: {img_url}")
                 return None
 
             try:
@@ -359,14 +368,14 @@ class PDDSpider(BaseScraper):
                 return path
 
             except UnidentifiedImageError:
-                self.logger.error(print(f"[!] 图片格式不支持或路径无效: {img_url}"))
+                self.logger.error(f"[!] 图片格式不支持或路径无效: {img_url}")
                 return None
             except Exception as e:
-                self.logger.error(print(f"[!] 图片处理异常: {e} | URL: {img_url}"))
+                self.logger.error(f"[!] 图片处理异常: {e} | URL: {img_url}")
                 return None
 
         except Exception as e:
-            self.logger.error(print(f"[!] 图片下载异常: {e} | URL: {img_url}"))
+            self.logger.error(f"[!] 图片下载异常: {e} | URL: {img_url}")
             return None
 
     def clean_url(self, url):
@@ -399,7 +408,7 @@ class PDDSpider(BaseScraper):
             else:
                 return url  # 如果没有匹配，返回原始 URL
         except Exception as e:
-            self.logger.error(print(f"Error cleaning URL: {e}"))
+            self.logger.error(f"Error cleaning URL: {e}")
             return url
 
     def get_more(self, element):
@@ -425,24 +434,25 @@ class PDDSpider(BaseScraper):
             # 获取当前页面 URL
             current_url = self.driver.current_url
             shop_url = self.clean_url(current_url)
+            self.captcha_handler.PDDsliderl()
         
             # 等待详情页关键元素加载
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.F2MXl7Xc')))
             except Exception:
-                self.logger.warning(print("[!] 无法加载评论数量元素，跳过"))
+                self.logger.warning("[!] 无法加载评论数量元素，跳过")
                 comment_count = 0  # 默认评论数为0
 
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.BAq4Lzv7')))
             except Exception:
-                self.logger.warning(print("[!] 无法加载店铺名元素，跳过"))
+                self.logger.warning("[!] 无法加载店铺名元素，跳过")
                 shop_name = "无店铺名称"  # 默认店铺名称
 
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.RbQ7MTuU')))
             except Exception:
-                self.logger.warning(print("[!] 无法加载包邮信息元素，跳过"))
+                self.logger.warning("[!] 无法加载包邮信息元素，跳过")
                 postage_info = "无包邮信息"  # 默认包邮信息
 
             # 获取评论数（如果没有评论，这一步会失败）
@@ -464,7 +474,7 @@ class PDDSpider(BaseScraper):
                 )
                 shop_name = shop_name_element.text.strip()
             except Exception as e:
-                self.logger.warning(print(f"[!] 获取店铺名称失败: {repr(e)}"))
+                self.logger.warning(f"[!] 获取店铺名称失败: {repr(e)}")
                 shop_name = "无店铺名称"  # 设置默认值
 
 
@@ -475,11 +485,11 @@ class PDDSpider(BaseScraper):
                 )
                 postage_info = ' '.join([e.text.strip() for e in postage_elements if e.text.strip()])
             except Exception as e:
-                self.logger.warning(print(f"[!] 获取包邮信息失败: {repr(e)}"))
+                self.logger.warning(f"[!] 获取包邮信息失败: {repr(e)}")
                 postage_info = "无包邮信息"  # 设置默认值
 
         except Exception as e:
-            self.logger.error(print(f"[!] 获取详情数据失败: {repr(e)}"))
+            self.logger.error(f"[!] 获取详情数据失败: {repr(e)}")
             self.save_page_html("error_page.html")
 
 
@@ -490,11 +500,26 @@ class PDDSpider(BaseScraper):
             except TimeoutException:
                 time.sleep(1)
             self.human_sleep(1, 2)
+
+        if (
+            comment_count == 0 and
+            shop_name in ["", "无店铺名称"] and
+            postage_info in ["", "无包邮信息"] and
+            shop_url == ''
+        ):
+            self.empty_data_count = getattr(self, 'empty_data_count', 0) + 1
+            self.logger.warning(f"[!] 获取为空数据 {self.empty_data_count}/3 次")
+            if self.empty_data_count >= 3:
+                self.logger.error("[!] 连续 3 次获取为空，程序即将暂停")
+                self.anti_spider_triggered = True  #  设置风控标志位
+                return 0 , None, None, None      #  提前返回特殊值
+        else:
+
+            self.empty_data_count = 0  # 有效数据则复位
         
-        #print(shop_url)
         return comment_count, shop_name, postage_info, shop_url  # 返回店铺URL
 
-    def clear_image_cache(self,folder='images'):
+    def clear_image_cache(self,folder='images/PDD'):
         """
         清空指定文件夹内所有文件和子文件夹，默认清空 image 文件夹
         """
@@ -507,26 +532,32 @@ class PDDSpider(BaseScraper):
                     elif os.path.isdir(file_path):
                         shutil.rmtree(file_path)
                 except Exception as e:
-                    self.logger.warning(print(f"[!] 删除缓存文件失败: {file_path} | 错误: {e}"))
+                    self.logger.warning(f"[!] 删除缓存文件失败: {file_path} | 错误: {e}")
         else:
-            self.logger.error(print(f"[!] 文件夹不存在或不是目录：{folder}"))
+            self.logger.error(f"[!] 文件夹不存在或不是目录：{folder}")
 
     def run(self):
         try:
             self.driver.get("https://mobile.pinduoduo.com/")
-            self.log.info(print("登录拼多多成功"))
+            self.logger.info("登录拼多多成功")
         except:
-            self.logger.error(print("登录拼多多失败"))
+            self.logger.error("登录拼多多失败")
+
         input("请登录拼多多并手动跳转到首页后按回车继续...")
+
         self.click_fake_search_box()
         self.search()
+        self.captcha_handler.PDDsliderl()
         data = self.parse_all_showcases(max_items=self.max_items)
-    
+
         if data:
             filename = f"{self.keyword}_{time.strftime('%Y%m%d_%H%M')}.xlsx"
             self.save_to_excel(data, filename)
-    
+            self.clear_image_cache('images')
+
+
         self.driver.quit()
+
 
 
 if __name__ == "__main__":

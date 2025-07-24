@@ -1,5 +1,4 @@
-# -*- coding: GBK -*-
-
+# -*- coding: utf-8 -*-
 import time
 import random
 import json
@@ -7,11 +6,9 @@ import re
 import requests
 import os
 import shutil
-
 from io import BytesIO
 from PIL import Image
 from PIL import UnidentifiedImageError
-
 from seleniumwire import webdriver  # selenium-wire 用于拦截请求
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
@@ -21,10 +18,11 @@ from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
 from openpyxl.drawing.image import Image as ExcelImage
 from openpyxl.utils import get_column_letter
-
 from pyquery import PyQuery as pq
 from openpyxl import Workbook
 from BaseScraper import BaseScraper
+
+from AntiScrapingException import CaptchaHandler
 
 
 
@@ -44,31 +42,9 @@ class JDScraper(BaseScraper):
         self.insert_image = True
         self._setup_excel()
         #self.lock = threading.Lock()  # 用于同步的锁
-
-    def human_sleep(self, min_time=0.5, max_time=1.5):
-        time.sleep(random.uniform(min_time, max_time))
-
-    def wait_manual_verification(self, min_seconds=2, max_seconds=3):
-        """
-        检查当前页面是否跳转到京东的风控滑块验证页（risk_handler），
-        如果是，则暂停程序等待用户手动滑动验证，通过后按回车继续。
-        """
-        if 'risk_handler' in self.driver.current_url:
-            print(" 检测到滑块风控页面，已暂停程序，建议降低抓取速度，请手动完成滑块验证。")
-            print(" 完成验证后，按下回车键继续...")
-            input(" 等待中...")
-            # 验证通过后，判断是否跳转回正常页面
-            if 'risk_handler' in self.driver.current_url:
-                print(" 仍处于风控页面，验证可能失败")
-                return False
-            else:
-                print(" 验证通过，继续执行")
-                return True
-        else:
-            self.human_sleep(min_seconds, max_seconds)
-            return True
-
-
+        self.anti_spider_triggered = False
+        self.captcha_handler = CaptchaHandler(self.driver)
+        self.captcha_handler.JDslider1()  # 调用风控
 
     def _setup_excel(self):
         headers = ['Num', 'Title', 'Price', 'Deal', 'Location', 'Shop', 'IsPostFree',
@@ -79,7 +55,6 @@ class JDScraper(BaseScraper):
     def save_cookies(self, path="JD_cookies.json"):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.driver.get_cookies(), f)
-
 
     def load_cookies(self, path="JD_cookies.json"):
         with open(path, "r", encoding="utf-8") as f:
@@ -107,23 +82,23 @@ class JDScraper(BaseScraper):
 
     def search(self):
         try:
-            print("尝试用定位搜索框和按钮...")
+            self.logger.info("尝试用定位搜索框和按钮...")
             search_box = self.wait.until(EC.element_to_be_clickable((By.ID, 'key')))
             search_btn = self.wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'button')))
         except Exception as e:
-            print("搜索框定位失败")
+            self.logger.error("搜索框定位失败")
         try:
             search_box.clear()
             search_box.send_keys(self.keyword)
             self.human_sleep(1, 2)
             search_btn.click()
-            self.wait_manual_verification()
+            self.captcha_handler.JDslider1()
         except Exception as e:
-            self.logger.warning(print("搜索操作失败:", e))
+            self.logger.warning(f"搜索操作失败:{e}")
 
     def go_to_page(self, page_number):
 
-        self.wait_manual_verification(1,2)
+        self.captcha_handler.JDslider1(1,2)
         try:
             # 定位到输入框并输入页数
             search_input = self.wait.until(EC.presence_of_element_located(
@@ -138,13 +113,11 @@ class JDScraper(BaseScraper):
             ))
             confirm_button.click()
             # 模拟人工休眠
-            self.wait_manual_verification(1,2)
+            self.captcha_handler.JDslider1(1,2) 
         except Exception as e:
             # 记录错误日志
             self.logger.warning(f"翻页失败: {e}")
             self.save_page_html("error_page.html")
-
-
 
     def get_more (self, url):
         post_text = ''
@@ -154,7 +127,7 @@ class JDScraper(BaseScraper):
             # 提取商品ID，防止href匹配失败
             item_id = re.search(r'/(\d+)\.html', url)
             if not item_id:
-                self.logger.warning(print("无法提取商品ID，跳过"))
+                self.logger.warning("无法提取商品ID，跳过")
                 return 0
             item_id = item_id.group(1)
 
@@ -165,7 +138,7 @@ class JDScraper(BaseScraper):
             # Ctrl+点击打开新标签页
             ActionChains(self.driver).key_down(Keys.CONTROL).click(link_element).key_up(Keys.CONTROL).perform()
 
-            self.wait_manual_verification(1,2)
+            self.captcha_handler.JDslider1(1,2) 
 
 
             # 等待新标签页打开
@@ -175,7 +148,7 @@ class JDScraper(BaseScraper):
                     break
                 time.sleep(0.5)
             else:
-                self.logger.warning(print("新标签页未打开"))
+                self.logger.warning("新标签页未打开")
                 self.save_page_html("error_page.html")
 
                 return 0
@@ -184,13 +157,13 @@ class JDScraper(BaseScraper):
             handles = self.driver.window_handles
             new_tabs = [h for h in handles if h != main_window]
             if not new_tabs:
-                self.logger.warning(print("找不到新标签页句柄"))
+                self.logger.warning("找不到新标签页句柄")
                 return 0
 
             new_tab = new_tabs[-1]
             self.driver.switch_to.window(new_tab)
 
-            self.wait_manual_verification(2,3)
+            self.captcha_handler.JDslider1() 
 
 
             # 等待页面刷新
@@ -212,7 +185,7 @@ class JDScraper(BaseScraper):
             return post_text  # 例如返回：'包邮'
 
         except Exception as e:
-            self.logger.warning(print("获取包邮失败"))
+            self.logger.warning("获取包邮失败")
 
         finally:
             # 关闭新标签页，切换回主窗口
@@ -221,9 +194,9 @@ class JDScraper(BaseScraper):
                 if self.driver.current_window_handle != main_window:
                     self.driver.close()
                     self.driver.switch_to.window(main_window)
-                    self.wait_manual_verification(1,2)
+                    self.captcha_handler.JDslider1(1,2) 
             except Exception as e:
-                self.logger.warning(print("关闭标签页或切换主窗口失败"))
+                self.logger.warning("关闭标签页或切换主窗口失败")
                 self.save_page_html("error_page.html")
                 
 
@@ -244,21 +217,21 @@ class JDScraper(BaseScraper):
 
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code != 200:
-                self.logger.error(print(f"图片请求失败: {url}"))
+                self.logger.error(f"图片请求失败: {url}")
                 return None
 
             try:
                 # 读取图片并转成 RGB
                 img = Image.open(BytesIO(response.content)).convert("RGB")
             except UnidentifiedImageError:
-                self.logger.error(print(f"图片解码失败（格式可能不受支持，如webp）: {url}"))
+                self.logger.error(f"图片解码失败（格式可能不受支持，如webp）: {url}")
                 return None
             except Exception as e:
-                self.logger.error(print(f"图片处理异常: {e} | URL: {url}"))
+                self.logger.error(f"图片处理异常: {e} | URL: {url}")
                 return None
 
             # 创建文件夹
-            folder = "images"
+            folder = "images/JD"
             if not os.path.exists(folder):
                 os.makedirs(folder)
 
@@ -273,11 +246,11 @@ class JDScraper(BaseScraper):
             return file_path
 
         except Exception as e:
-            self.logger.error(print(f"图片下载异常: {e} | URL: {url}"))
+            self.logger.error(f"图片下载异常: {e} | URL: {url}")
             return None
 
     def clean_image_folder(self):
-        folder = "images"
+        folder = "images/JD"
         if os.path.exists(folder):
             for filename in os.listdir(folder):
                 file_path = os.path.join(folder, filename)
@@ -286,150 +259,135 @@ class JDScraper(BaseScraper):
                 elif os.path.isdir(file_path):
                     shutil.rmtree(file_path)  # 删除子文件夹
 
-    ##滑动窗口
-    def scroll_step_down(self, base_step=300):
-        """模拟人类向下小段滑动"""
-        step = random.randint(base_step - 100, base_step + 100)
-        self.driver.execute_script(f"window.scrollBy(0, {step});")
-        time.sleep(random.uniform(0.6, 1.2))
-        self.wait_manual_verification()
 
 
-    def smart_scroll_until_loaded(self, min_new_items=4, max_scroll_attempts=10):
-        """边滚动边检测新商品是否加载，最多尝试 max_scroll_attempts 次"""
-        last_count = 0
-        attempts = 0
 
-    def multi_scroll_up_down(self, up_num=1,down_num=8 , up_step=-200, down_step=800):
-        # 向下滚动
-        for _ in range(down_num):
-            self.scroll_step_down(down_step)
-    
-        # 向上滚动
-        for _ in range(up_num):
-            self.scroll_step_down(up_step)
- 
-
-        # 模拟人工休眠，防止过快的滚动
-        time.sleep(random.uniform(1.0, 1.5))
-
-
-    def parse_page(self, page_number):
+    def parse_page(self, page_number, platform='JD',hash_json='hash_store.json'):
         html = self.driver.page_source
         doc = pq(html)
         items = doc('ul.gl-warp.clearfix > li').items()
         slide_counter = 0  # 每页开始前初始化下滑计数器
+        # 载入历史哈希
+        hash_set = self.load_hash_set(hash_json)
+
 
         for item in items:
-            if self.count - 2 >= self.max_items:
-                print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
-                return False
-
-#            if item.find('.title--RoseSo8H').text() or item.find('.headTitleText--hxVemljn').text():
-#                continue
-
-            # 获取图片标签
-            img_tag = item.find('img')
-
-            # 处理懒加载情况，优先选择 data-lazy-img 或者 src
-            img_url = img_tag.attr('data-lazy-img') if img_tag.attr('data-lazy-img') else img_tag.attr('src')
-
-            # 判断是否为相对路径，如果是，补全为完整的 URL
-            if img_url and img_url.startswith('//'):
-                img_url = 'https:' + img_url  # 补全相对路径为完整 URL
-
-            # 打印或保存图片链接
-            print(img_url)
-
-            # 依次尝试 src / data-src / src2 / data-ks-lazyload
-            img_url = (
-                img_tag.attr('src')
-                or img_tag.attr('data-src')
-                or img_tag.attr('src2')
-                or img_tag.attr('data-ks-lazyload')
-                or img_tag.attr('data-lazyload')
-                or ""
-            ).strip()
-
-            # 修复以 // 开头或缺少协议的情况
-            if img_url.startswith("//"):
-                img_url = "https:" + img_url
-            elif img_url.startswith("/"):
-                img_url = "https://img.alicdn.com" + img_url
-
-            # 判断图片链接是否有效并下载到本地
-            if not img_url or not isinstance(img_url, str) or not img_url.startswith(('/', '//', 'http')):
-                self.logger.warning(print(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图"))
-                self.logger.warning(print("商品 HTML 片段："))
-                print(item.outer_html())
-                image_path = None
-            else:
-                image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
-
-            #标题
-            title_elem = item.find('.p-name em')
-            title = title_elem.text().strip() if title_elem else ''
-            #价格
-            price_elem = item.find('.p-price i')
-            price_text = price_elem.text().strip() if price_elem else ''          
             try:
-                price = float(price_text)
-            except ValueError:
-                price = 0.0
+                if self.count - 2 >= self.max_items:
+                    print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
+                    return False
 
-            #京东不显示销量
-            deal = 0
-            #无地址
-            location = ''
-            #店铺名称和链接
-            shop_elem = item.find('.p-shop a')
-            shop_name = shop_elem.text().strip() if shop_elem else ''
-            shop = shop_name
-            shop_href = shop_elem.attr('href') if shop_elem else ''
-            shop_url = 'https:' + shop_href if shop_href and shop_href.startswith('//') else shop_href
-            #评论数量
-            num_com = item.find('.p-commit a')
-            num_com = num_com.text().strip() if num_com else ''
-            #商品链接
-            item_url = item.find('a[href^="//item.jd.com/"]')
-            item_url = item_url.attr('href') if item_url else ''
-            item_url = 'https:' + item_url if item_url and item_url.startswith('//') else item_url
+                if self.anti_spider_triggered == True:
+                    print(f"触发强制风控账号冻结 应前往京东APP解封")
+                    return False
 
-            post = self.get_more(item_url)
+    #            if item.find('.title--RoseSo8H').text() or item.find('.headTitleText--hxVemljn').text():
+    #                continue
 
+                # 获取图片标签
+                img_tag = item.find('img')
 
-            row = self.count
-            self.sheet.row_dimensions[row].height = 65
-            self.sheet.column_dimensions['L'].width = 13
+                # 处理懒加载情况，优先选择 data-lazy-img 或者 src
+                img_url = img_tag.attr('data-lazy-img') if img_tag.attr('data-lazy-img') else img_tag.attr('src')
 
-            self.sheet.cell(row=row, column=1, value=row - 1)
-            self.sheet.cell(row=row, column=2, value=title)
-            self.sheet.cell(row=row, column=3, value=price)
-            self.sheet.cell(row=row, column=4, value=deal)
-            self.sheet.cell(row=row, column=5, value=location)
-            self.sheet.cell(row=row, column=6, value=shop)
-            self.sheet.cell(row=row, column=7, value=post)
-            self.sheet.cell(row=row, column=8, value=item_url)
-            self.sheet.cell(row=row, column=9, value=shop_url)
-            self.sheet.cell(row=row, column=10, value=img_url)
-            self.sheet.cell(row=row, column=11, value=num_com)
+                # 判断是否为相对路径，如果是，补全为完整的 URL
+                if img_url and img_url.startswith('//'):
+                    img_url = 'https:' + img_url  # 补全相对路径为完整 URL
 
-            if self.insert_image and image_path and os.path.exists(image_path):
+                # 打印或保存图片链接
+                print(img_url)
+
+                # 依次尝试 src / data-src / src2 / data-ks-lazyload
+                img_url = (
+                    img_tag.attr('src')
+                    or img_tag.attr('data-src')
+                    or img_tag.attr('src2')
+                    or img_tag.attr('data-ks-lazyload')
+                    or img_tag.attr('data-lazyload')
+                    or ""
+                ).strip()
+
+                # 修复以 // 开头或缺少协议的情况
+                if img_url.startswith("//"):
+                    img_url = "https:" + img_url
+                elif img_url.startswith("/"):
+                    img_url = "https://img.alicdn.com" + img_url
+
+                # 判断图片链接是否有效并下载到本地
+                if not img_url or not isinstance(img_url, str) or not img_url.startswith(('/', '//', 'http')):
+                    self.logger.warning(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图")
+                    self.logger.warning("商品 HTML 片段：")
+                    print(item.outer_html())
+                    image_path = None
+                else:
+                    image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
+
+                #标题
+                title_elem = item.find('.p-name em')
+                title = title_elem.text().strip() if title_elem else ''
+                #价格
+                price_elem = item.find('.p-price i')
+                price_text = price_elem.text().strip() if price_elem else ''          
                 try:
-                    img = ExcelImage(image_path)
-                    img.width, img.height = 80, 80
-                    self.sheet.add_image(img, f'L{row}')
-                except Exception as e:
-                    self.logger.error(print(f"插入图片失败: {e}（图片路径: {image_path}）"))
+                    price = float(price_text)
+                except ValueError:
+                    price = 0.0
 
-            print(f"第{row - 1}个商品信息已保存")
-            self.count += 1
-            slide_counter += 1  # 累加计数
-            if slide_counter % 6 == 0:
-                #print(f"已抓取 {slide_counter} 个商品，调用一次下滑函数...")
-                self.scroll_step_down()
-            self.human_sleep(1, 2)
+                #京东不显示销量
+                deal = 0
+                #无地址
+                location = ''
+                #店铺名称和链接
+                shop_elem = item.find('.p-shop a')
+                shop_name = shop_elem.text().strip() if shop_elem else ''
+                shop = shop_name
+                shop_href = shop_elem.attr('href') if shop_elem else ''
+                shop_url = 'https:' + shop_href if shop_href and shop_href.startswith('//') else shop_href
+                #评论数量
+                num_com = item.find('.p-commit a')
+                num_com = num_com.text().strip() if num_com else ''
+                #商品链接
+                item_url = item.find('a[href^="//item.jd.com/"]')
+                item_url = item_url.attr('href') if item_url else ''
+                item_url = 'https:' + item_url if item_url and item_url.startswith('//') else item_url
+                # ==== 新增哈希去重 ====
+                item_dict = {'title': title, 'price': price}
+                features_url = shop_url or ''  # 用图片链接代替特征链接
 
+                item_hash = self.compute_hash(item_dict, platform, features_url)
+                if item_hash in hash_set:
+                    # print(f"[跳过] 已存在的商品: {title}")
+                    continue
+                hash_set.add(item_hash)
+                # ======================
+                post = self.get_more(item_url)
+                # 调用父类的保存方法
+                self.save_product_to_excel(
+                    row=self.count,
+                    title=title,
+                    price=price,
+                    deal=deal,
+                    location=location,
+                    shop=shop,
+                    post=post,
+                    item_url=item_url,
+                    shop_url=shop_url,
+                    img_url=img_url,
+                    num_com=num_com,
+                    image_path=image_path
+                )
+                self.count += 1
+                slide_counter += 1  # 累加计数
+                if slide_counter % 6 == 0:
+                    #print(f"已抓取 {slide_counter} 个商品，调用一次下滑函数...")
+                    self.scroll_step_down()
+                self.human_sleep(1, 2)
+
+            except Exception as e:
+                self.logger.warning(f"[!] 解析商品异常: {e}")
+                continue         
+        # 保存哈希集，方便下次增量爬取
+        self.save_hash_set(hash_set, hash_json)            
         return True
 
     def turn_page(self, page_number):
@@ -446,7 +404,7 @@ class JDScraper(BaseScraper):
                 By.CSS_SELECTOR, '#J_bottomPage .p-skip .btn'
             )
             confirm_btn.click()
-            self.wait_manual_verification(1,2)
+            self.captcha_handler.JDslider1(1,2) 
 
             # 等待当前页码变更为目标页
             self.wait.until(EC.text_to_be_present_in_element(
@@ -459,7 +417,6 @@ class JDScraper(BaseScraper):
         except Exception as e:
             self.logger.error(f"翻页失败，目标页码 {page_number}：{e}")
             self.save_page_html("error_page.html")
-
 
     def run(self):
         self.driver.get("https://www.jd.com/")
@@ -489,7 +446,6 @@ class JDScraper(BaseScraper):
         print(f"文件已保存: {filename}")
         self.clean_image_folder()
         self.driver.quit()
-
 
 if __name__ == "__main__":
     keyword = "奉贤黄桃"#input("输入搜索关键词：")
