@@ -26,6 +26,7 @@ from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
 from BaseScraper import BaseScraper
 from AntiScrapingException import CaptchaHandler
+from path_utils import static_image_path ,static_hash_path , static_excel_path
 
 
 
@@ -57,6 +58,7 @@ class Ali_1688Scraper(BaseScraper):
         for i, header in enumerate(headers, 1):
             self.sheet.cell(row=1, column=i, value=header)
 
+    '''
     def save_cookies(self, path="Ali1688_cookies.json"):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.driver.get_cookies(), f)
@@ -83,8 +85,8 @@ class Ali_1688Scraper(BaseScraper):
             input("如出现滑块，请手动完成验证后按 Enter 继续...")
             self.save_cookies()
         except Exception as e:
-            self.logger.waring(f"登录失败:{e}")
-
+            self.logger.warning(f"登录失败:{e}")
+    '''
     def search(self):
         try:
             print("尝试用定位搜索框和按钮...")
@@ -117,12 +119,25 @@ class Ali_1688Scraper(BaseScraper):
             confirm_btn = self.wait.until(EC.element_to_be_clickable(
                 (By.CSS_SELECTOR, 'div.paging-to-page-button')))
             confirm_btn.click()
+
             self.captcha_handler.AliCaptcha()
             self.human_sleep(2, 3)
 
+            return None  # 表示跳转成功
+
         except Exception as e:
-            self.logger.warning(f"翻页失败: {e}")
+            self.logger.warning(f"[翻页失败] 第 {page_number} 页: {e}")
             self.save_page_html("error_page.html")
+
+            # ==== 提取最大页码 ====
+            try:
+                page_info_elem = self.driver.find_element(By.CSS_SELECTOR, 'span.fui-paging-num')
+                max_page = int(page_info_elem.text.strip())
+                self.logger.warning(f"[检测最大页数] 当前最大页数为: {max_page}")
+                return max_page
+            except Exception as ex:
+                self.logger.warning(f"[获取最大页码失败]: {ex}")
+                return 1  # 安全兜底：默认只有 1 页
 
     def get_more(self, url):
         comment_count = 0
@@ -234,40 +249,37 @@ class Ali_1688Scraper(BaseScraper):
 
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code != 200:
-                self.logger.error(print(f"图片请求失败: {url}"))
+                self.logger.error(f"图片请求失败: {url}")
                 return None
 
             try:
                 # 读取图片并转成 RGB
                 img = Image.open(BytesIO(response.content)).convert("RGB")
             except UnidentifiedImageError:
-                self.logger.error(print(f"图片解码失败（格式可能不受支持，如webp）: {url}"))
+                self.logger.error(f"图片解码失败（格式可能不受支持，如webp）: {url}")
                 return None
             except Exception as e:
-                self.logger.error(print(f"图片处理异常: {e} | URL: {url}"))
+                self.logger.error(f"图片处理异常: {e} | URL: {url}")
                 return None
 
-            # 创建文件夹
-            folder = "images/1688"
-            if not os.path.exists(folder):
-                os.makedirs(folder)
-
-            # 生成文件名，保存为 jpg
+            # 统一使用 static_image_path 构造保存路径
             file_name = f"{index:04d}.jpg"
-            file_path = os.path.join(folder, file_name)
+            file_path = static_image_path("1688", file_name)
 
-            # 保存成 jpg 文件
+            # 确保目录存在
+            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+
+            # 保存为 jpg 文件
             img.save(file_path, format="JPEG")
 
-            # 返回文件路径
             return file_path
 
         except Exception as e:
-            self.logger.error(print(f"图片下载异常: {e} | URL: {url}"))
+            self.logger.error(f"图片下载异常: {e} | URL: {url}")
             return None
 
     def clean_image_folder(self):
-        folder = "images/1688"
+        folder = static_image_path("1688")  # 获取图片根目录，不传filename只拿文件夹路径
         if os.path.exists(folder):
             for filename in os.listdir(folder):
                 file_path = os.path.join(folder, filename)
@@ -277,7 +289,7 @@ class Ali_1688Scraper(BaseScraper):
                     shutil.rmtree(file_path)  # 删除子文件夹
 
 
-    def parse_page(self, page_number, platform='Ali1688',hash_json='hash_store.json'):
+    def parse_page(self, page_number, platform='Ali1688'):
         # 获取当前页面所有商品元素（Selenium WebElement）
         items_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a.search-offer-item')
         # 用 pyquery 解析页面HTML，拿到所有商品节点
@@ -285,6 +297,7 @@ class Ali_1688Scraper(BaseScraper):
         doc = pq(html)
         items_data = list(doc('a.search-offer-item').items())
         # 载入历史哈希
+        hash_json = static_hash_path("hash_store.json")
         hash_set = self.load_hash_set(hash_json)
 
         if len(items_elements) != len(items_data):
@@ -334,14 +347,7 @@ class Ali_1688Scraper(BaseScraper):
                 elif img_url.startswith("/"):
                     img_url = "https://cbu01.alicdn.com/" + img_url
 
-                # 判断图片链接是否有效并下载
-                if not img_url or not isinstance(img_url, str) or not img_url.startswith(('http', '//', '/')):
-                    self.logger.warning(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图")
-                    self.logger.warning("商品 HTML 片段：")
-                    print(data.outer_html())
-                    image_path = None
-                else:
-                    image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
+
 
                 # 解析其他字段
                 title = data.find('.offer-title-row .title-text div').text()
@@ -420,7 +426,14 @@ class Ali_1688Scraper(BaseScraper):
                     continue
                 hash_set.add(item_hash)
                 # ======================
-
+                # 判断图片链接是否有效并下载
+                if not img_url or not isinstance(img_url, str) or not img_url.startswith(('http', '//', '/')):
+                    self.logger.warning(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图")
+                    self.logger.warning("商品 HTML 片段：")
+                    print(data.outer_html())
+                    image_path = None
+                else:
+                    image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
 
                 # 获取额外信息（地区、评论数）
                 location, num_com = self.get_more(item_url)
@@ -465,49 +478,79 @@ class Ali_1688Scraper(BaseScraper):
         self.save_hash_set(hash_set, hash_json)   
         return True
 
-    def turn_page(self, page_number):
+    def turn_page(self, page_number: int):
         try:
-            self.go_to_page(page_number)
-            # 等待页码跳转成功（可选：根据实际页码位置调整 XPath 或 CSS）
-            self.wait.until(EC.text_to_be_present_in_element(
-                (By.CSS_SELECTOR, 'span.paging-info > em'),  # 修改为实际显示当前页码的位置
-                str(page_number)
-            ))
+            # 1. 定位输入框并输入目标页码
+            input_box = self.wait.until(EC.presence_of_element_located(
+                (By.CSS_SELECTOR, "input.input-page")))
+            input_box.clear()
+            input_box.send_keys(str(page_number))
+            self.human_sleep(0.3, 1.0)
+
+            # 2. 点击“确定”按钮
+            confirm_btn = self.wait.until(EC.element_to_be_clickable(
+                (By.CSS_SELECTOR, "div.paging-to-page-button")))
+            confirm_btn.click()
+
+            # 3. 滑块验证
             self.captcha_handler.AliCaptcha()
-            self.human_sleep(2, 3)
+
+            # 4. 等待翻页完成，适配不同结构的当前页码元素
+            def page_loaded(driver):
+                try:
+                    current_elem = driver.find_element(By.CSS_SELECTOR, "div.fui-current.fui-page-item")
+                    return current_elem.text.strip() == str(page_number)
+                except Exception:
+                    return False
+
+            WebDriverWait(self.driver, 10).until(page_loaded)
+
+            self.logger.info(f"[翻页成功] 跳转至第 {page_number} 页")
+            self.human_sleep(1.5, 2.5)
+
         except Exception as e:
-            print("翻页失败:", e)
+            self.logger.warning(f"[翻页失败] 第 {page_number} 页: {e}")
             self.save_page_html("error_page.html")
 
     def run(self):
         self.driver.get("https://www.1688.com/")
         input("请在浏览器中手动登录1688，如出现滑块，请手动完成验证后按 Enter 继续......")
         self.search()
-        # 切换到最新打开的标签页
+
+        # 切换到搜索结果页
         handles = self.driver.window_handles
         self.driver.switch_to.window(handles[-1])
 
+        # 如果不是从第一页开始，则尝试跳转
         if self.page_start != 1:
-
             self.multi_scroll_up_down()
-            self.go_to_page(self.page_start)
+            result = self.go_to_page(self.page_start)
+            if result is not None:
+                self.logger.warning(f"起始页 {self.page_start} 跳转失败，最大页码为 {result}，停止程序")
+                return  # 或者 self.page_end = result 再继续处理部分页码
 
         for page in range(self.page_start, self.page_end + 1):
-            if self.count - 2 >= self.max_items:  # 检查是否已达到最大抓取数量
+            if self.count - 2 >= self.max_items:
                 print(f"已抓取 {self.max_items} 个商品，停止抓取")
-                break  # 达到最大数量时停止抓取
+                break
 
-            self.multi_scroll_up_down(8,8,-800,800)
+            self.multi_scroll_up_down(8, 8, -800, 800)
             proceed = self.parse_page(page)
             if not proceed:
-                self.logger.warning(print(f"第 {page} 页爬取失败，跳过"))
-                continue  # 如果该页抓取失败，跳过
+                self.logger.warning(f"第 {page} 页爬取失败，跳过")
+                continue
 
             if page != self.page_end:
-                self.turn_page(page + 1)
+                # 翻页跳转下一页
+                result = self.go_to_page(page + 1)
+                if result is not None:
+                    self.logger.warning(f"第 {page + 1} 页跳转失败，检测到最大页码为 {result}，提前结束")
+                    break
 
+        # 保存文件
         filename = f"{self.keyword}_{time.strftime('%Y%m%d-%H%M')}.xlsx"
-        self.excel.save(filename)
+        filepath = static_excel_path(filename)
+        self.excel.save(filepath)
         print(f"文件已保存: {filename}")
         self.clean_image_folder()
         self.driver.quit()
@@ -515,9 +558,9 @@ class Ali_1688Scraper(BaseScraper):
 
 if __name__ == "__main__":
     keyword = "奉贤黄桃"#input("输入搜索关键词：")
-    start_page =1 # int(input("起始页码："))
-    end_page = 3 #int(input("终止页码："))
-    max_items = 50 #int(input("最多抓取商品数量："))
+    start_page =2 # int(input("起始页码："))
+    end_page = 2 #int(input("终止页码："))
+    max_items = 5 #int(input("最多抓取商品数量："))
     insert_image = input("是否插入商品图片到 Excel？(y/n)：").strip().lower() == "y"
 
     scraper = Ali_1688Scraper(keyword, start_page, end_page, max_items=max_items)

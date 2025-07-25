@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+ï»¿# -*- coding: utf-8 -*-
 import time
 import random
 import json
@@ -9,7 +9,7 @@ import shutil
 from io import BytesIO
 from PIL import Image
 from PIL import UnidentifiedImageError
-from seleniumwire import webdriver  # selenium-wire ÓÃÓÚÀ¹½ØÇëÇó
+from seleniumwire import webdriver  # selenium-wire ç”¨äºæ‹¦æˆªè¯·æ±‚
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -23,6 +23,8 @@ from openpyxl import Workbook
 from BaseScraper import BaseScraper
 
 from AntiScrapingException import CaptchaHandler
+from path_utils import static_image_path ,static_hash_path , static_excel_path
+
 
 
 
@@ -41,10 +43,10 @@ class JDScraper(BaseScraper):
         self.count = 2
         self.insert_image = True
         self._setup_excel()
-        #self.lock = threading.Lock()  # ÓÃÓÚÍ¬²½µÄËø
+        #self.lock = threading.Lock()  # ç”¨äºåŒæ­¥çš„é”
         self.anti_spider_triggered = False
         self.captcha_handler = CaptchaHandler(self.driver)
-        self.captcha_handler.JDslider1()  # µ÷ÓÃ·ç¿Ø
+        self.captcha_handler.JDslider1()  # è°ƒç”¨é£æ§
 
     def _setup_excel(self):
         headers = ['Num', 'Title', 'Price', 'Deal', 'Location', 'Shop', 'IsPostFree',
@@ -52,6 +54,8 @@ class JDScraper(BaseScraper):
         for i, header in enumerate(headers, 1):
             self.sheet.cell(row=1, column=i, value=header)
 
+
+    '''
     def save_cookies(self, path="JD_cookies.json"):
         with open(path, "w", encoding="utf-8") as f:
             json.dump(self.driver.get_cookies(), f)
@@ -63,8 +67,8 @@ class JDScraper(BaseScraper):
                 self.driver.add_cookie(cookie)
         self.driver.refresh()
 
-    def login(self, user, password):#Ã»×ö
-        print("ÕıÔÚ³¢ÊÔµÇÂ¼JD...")
+    def login(self, user, password):#æ²¡åš
+        print("æ­£åœ¨å°è¯•ç™»å½•JD...")
         try:
             iframe = self.wait.until(EC.presence_of_element_located(
                 (By.XPATH, '//iframe[contains(@src, "login.taobao.com")]')))
@@ -75,18 +79,19 @@ class JDScraper(BaseScraper):
             self.human_sleep(1, 2)
             self.driver.find_element(By.CSS_SELECTOR, 'button.fm-button.fm-submit.password-login').click()
             self.human_sleep(1, 2)
-            input("Èç³öÏÖ»¬¿é£¬ÇëÊÖ¶¯Íê³ÉÑéÖ¤ºó°´ Enter ¼ÌĞø...")
+            input("å¦‚å‡ºç°æ»‘å—ï¼Œè¯·æ‰‹åŠ¨å®ŒæˆéªŒè¯åæŒ‰ Enter ç»§ç»­...")
             self.save_cookies()
         except Exception as e:
-            self.logger.warning(print("µÇÂ¼Ê§°Ü:", e))
+            self.logger.warning(print("ç™»å½•å¤±è´¥:", e))
+    '''
 
     def search(self):
         try:
-            self.logger.info("³¢ÊÔÓÃ¶¨Î»ËÑË÷¿òºÍ°´Å¥...")
+            self.logger.info("å°è¯•ç”¨å®šä½æœç´¢æ¡†å’ŒæŒ‰é’®...")
             search_box = self.wait.until(EC.element_to_be_clickable((By.ID, 'key')))
             search_btn = self.wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'button')))
         except Exception as e:
-            self.logger.error("ËÑË÷¿ò¶¨Î»Ê§°Ü")
+            self.logger.error("æœç´¢æ¡†å®šä½å¤±è´¥")
         try:
             search_box.clear()
             search_box.send_keys(self.keyword)
@@ -94,29 +99,29 @@ class JDScraper(BaseScraper):
             search_btn.click()
             self.captcha_handler.JDslider1()
         except Exception as e:
-            self.logger.warning(f"ËÑË÷²Ù×÷Ê§°Ü:{e}")
+            self.logger.warning(f"æœç´¢æ“ä½œå¤±è´¥:{e}")
 
     def go_to_page(self, page_number):
 
         self.captcha_handler.JDslider1(1,2)
         try:
-            # ¶¨Î»µ½ÊäÈë¿ò²¢ÊäÈëÒ³Êı
+            # å®šä½åˆ°è¾“å…¥æ¡†å¹¶è¾“å…¥é¡µæ•°
             search_input = self.wait.until(EC.presence_of_element_located(
                 (By.XPATH, '//span[@class="p-skip"]//input[@class="input-txt"]')
             ))
-            search_input.clear()  # Çå¿ÕÊäÈë¿ò
+            search_input.clear()  # æ¸…ç©ºè¾“å…¥æ¡†
             search_input.send_keys(page_number)  
 
-            # ¶¨Î»µ½È·ÈÏ°´Å¥²¢µã»÷
+            # å®šä½åˆ°ç¡®è®¤æŒ‰é’®å¹¶ç‚¹å‡»
             confirm_button = self.wait.until(EC.presence_of_element_located(
                 (By.XPATH, '//span[@class="p-skip"]//a[@class="btn btn-default"]')
             ))
             confirm_button.click()
-            # Ä£ÄâÈË¹¤ĞİÃß
+            # æ¨¡æ‹Ÿäººå·¥ä¼‘çœ 
             self.captcha_handler.JDslider1(1,2) 
         except Exception as e:
-            # ¼ÇÂ¼´íÎóÈÕÖ¾
-            self.logger.warning(f"·­Ò³Ê§°Ü: {e}")
+            # è®°å½•é”™è¯¯æ—¥å¿—
+            self.logger.warning(f"ç¿»é¡µå¤±è´¥: {e}")
             self.save_page_html("error_page.html")
 
     def get_more (self, url):
@@ -124,40 +129,40 @@ class JDScraper(BaseScraper):
         main_window = self.driver.current_window_handle
 
         try:
-            # ÌáÈ¡ÉÌÆ·ID£¬·ÀÖ¹hrefÆ¥ÅäÊ§°Ü
+            # æå–å•†å“IDï¼Œé˜²æ­¢hrefåŒ¹é…å¤±è´¥
             item_id = re.search(r'/(\d+)\.html', url)
             if not item_id:
-                self.logger.warning("ÎŞ·¨ÌáÈ¡ÉÌÆ·ID£¬Ìø¹ı")
+                self.logger.warning("æ— æ³•æå–å•†å“IDï¼Œè·³è¿‡")
                 return 0
             item_id = item_id.group(1)
 
-            # ÓÃÄ£ºıÆ¥Åä¶¨Î»Á´½Ó
+            # ç”¨æ¨¡ç³ŠåŒ¹é…å®šä½é“¾æ¥
             link_xpath = f'//a[contains(@href, "{item_id}")]'
             link_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, link_xpath)))
 
-            # Ctrl+µã»÷´ò¿ªĞÂ±êÇ©Ò³
+            # Ctrl+ç‚¹å‡»æ‰“å¼€æ–°æ ‡ç­¾é¡µ
             ActionChains(self.driver).key_down(Keys.CONTROL).click(link_element).key_up(Keys.CONTROL).perform()
 
             self.captcha_handler.JDslider1(1,2) 
 
 
-            # µÈ´ıĞÂ±êÇ©Ò³´ò¿ª
+            # ç­‰å¾…æ–°æ ‡ç­¾é¡µæ‰“å¼€
             for _ in range(10):
                 handles = self.driver.window_handles
                 if len(handles) > 1:
                     break
                 time.sleep(0.5)
             else:
-                self.logger.warning("ĞÂ±êÇ©Ò³Î´´ò¿ª")
+                self.logger.warning("æ–°æ ‡ç­¾é¡µæœªæ‰“å¼€")
                 self.save_page_html("error_page.html")
 
                 return 0
 
-            # ÖØĞÂ»ñÈ¡ËùÓĞ´°¿Ú¾ä±ú
+            # é‡æ–°è·å–æ‰€æœ‰çª—å£å¥æŸ„
             handles = self.driver.window_handles
             new_tabs = [h for h in handles if h != main_window]
             if not new_tabs:
-                self.logger.warning("ÕÒ²»µ½ĞÂ±êÇ©Ò³¾ä±ú")
+                self.logger.warning("æ‰¾ä¸åˆ°æ–°æ ‡ç­¾é¡µå¥æŸ„")
                 return 0
 
             new_tab = new_tabs[-1]
@@ -166,14 +171,14 @@ class JDScraper(BaseScraper):
             self.captcha_handler.JDslider1() 
 
 
-            # µÈ´ıÒ³ÃæË¢ĞÂ
+            # ç­‰å¾…é¡µé¢åˆ·æ–°
             try:
-                # µÈ´ı°üÓÊ±êÇ©³öÏÖ
+                # ç­‰å¾…åŒ…é‚®æ ‡ç­¾å‡ºç°
                 self.wait.until(EC.presence_of_element_located(
                     (By.XPATH, '//span[contains(@class, "free-shipping")]')
                 ))
 
-                # »ñÈ¡°üÓÊÎÄ×Ö
+                # è·å–åŒ…é‚®æ–‡å­—
                 post_text = self.driver.find_element(
                     By.XPATH,
                     '//span[contains(@class, "free-shipping")]'
@@ -182,13 +187,13 @@ class JDScraper(BaseScraper):
             except Exception:
                 post_text = ''
 
-            return post_text  # ÀıÈç·µ»Ø£º'°üÓÊ'
+            return post_text  # ä¾‹å¦‚è¿”å›ï¼š'åŒ…é‚®'
 
         except Exception as e:
-            self.logger.warning("»ñÈ¡°üÓÊÊ§°Ü")
+            self.logger.warning("è·å–åŒ…é‚®å¤±è´¥")
 
         finally:
-            # ¹Ø±ÕĞÂ±êÇ©Ò³£¬ÇĞ»»»ØÖ÷´°¿Ú
+            # å…³é—­æ–°æ ‡ç­¾é¡µï¼Œåˆ‡æ¢å›ä¸»çª—å£
             self.human_sleep(1,2)
             try:
                 if self.driver.current_window_handle != main_window:
@@ -196,7 +201,7 @@ class JDScraper(BaseScraper):
                     self.driver.switch_to.window(main_window)
                     self.captcha_handler.JDslider1(1,2) 
             except Exception as e:
-                self.logger.warning("¹Ø±Õ±êÇ©Ò³»òÇĞ»»Ö÷´°¿ÚÊ§°Ü")
+                self.logger.warning("å…³é—­æ ‡ç­¾é¡µæˆ–åˆ‡æ¢ä¸»çª—å£å¤±è´¥")
                 self.save_page_html("error_page.html")
                 
 
@@ -204,7 +209,7 @@ class JDScraper(BaseScraper):
 
     def download_image(self, url, index):
         try:
-            # ²¹È« url
+            # è¡¥å…¨ url
             if url.startswith("//"):
                 url = "https:" + url
             elif url.startswith("/"):
@@ -212,52 +217,52 @@ class JDScraper(BaseScraper):
 
             headers = {
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
-                "Referer": "https://www.taobao.com/",
+                "Referer": "https://www.jd.com/",
             }
 
             response = requests.get(url, headers=headers, timeout=10)
             if response.status_code != 200:
-                self.logger.error(f"Í¼Æ¬ÇëÇóÊ§°Ü: {url}")
+                self.logger.error(f"å›¾ç‰‡è¯·æ±‚å¤±è´¥: {url}")
                 return None
 
             try:
-                # ¶ÁÈ¡Í¼Æ¬²¢×ª³É RGB
+                # è¯»å–å›¾ç‰‡å¹¶è½¬æˆ RGB
                 img = Image.open(BytesIO(response.content)).convert("RGB")
             except UnidentifiedImageError:
-                self.logger.error(f"Í¼Æ¬½âÂëÊ§°Ü£¨¸ñÊ½¿ÉÄÜ²»ÊÜÖ§³Ö£¬Èçwebp£©: {url}")
+                self.logger.error(f"å›¾ç‰‡è§£ç å¤±è´¥ï¼ˆæ ¼å¼å¯èƒ½ä¸å—æ”¯æŒï¼Œå¦‚webpï¼‰: {url}")
                 return None
             except Exception as e:
-                self.logger.error(f"Í¼Æ¬´¦ÀíÒì³£: {e} | URL: {url}")
+                self.logger.error(f"å›¾ç‰‡å¤„ç†å¼‚å¸¸: {e} | URL: {url}")
                 return None
 
-            # ´´½¨ÎÄ¼ş¼Ğ
+            # åˆ›å»ºæ–‡ä»¶å¤¹
             folder = "images/JD"
             if not os.path.exists(folder):
                 os.makedirs(folder)
 
-            # Éú³ÉÎÄ¼şÃû£¬±£´æÎª jpg
+            # ç»Ÿä¸€ä½¿ç”¨ static_image_path æ„é€ ä¿å­˜è·¯å¾„
             file_name = f"{index:04d}.jpg"
-            file_path = os.path.join(folder, file_name)
+            file_path = static_image_path("JD", file_name)
 
-            # ±£´æ³É jpg ÎÄ¼ş
+            # ä¿å­˜æˆ jpg æ–‡ä»¶
             img.save(file_path, format="JPEG")
 
-            # ·µ»ØÎÄ¼şÂ·¾¶
+            # è¿”å›æ–‡ä»¶è·¯å¾„
             return file_path
 
         except Exception as e:
-            self.logger.error(f"Í¼Æ¬ÏÂÔØÒì³£: {e} | URL: {url}")
+            self.logger.error(f"å›¾ç‰‡ä¸‹è½½å¼‚å¸¸: {e} | URL: {url}")
             return None
 
     def clean_image_folder(self):
-        folder = "images/JD"
+        folder = static_image_path("JD")  # è·å–å›¾ç‰‡æ ¹ç›®å½•ï¼Œä¸ä¼ filenameåªæ‹¿æ–‡ä»¶å¤¹è·¯å¾„
         if os.path.exists(folder):
             for filename in os.listdir(folder):
                 file_path = os.path.join(folder, filename)
                 if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)  # É¾³ıÎÄ¼ş»ò¿ì½İ·½Ê½
+                    os.unlink(file_path)  # åˆ é™¤æ–‡ä»¶æˆ–å¿«æ·æ–¹å¼
                 elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)  # É¾³ı×ÓÎÄ¼ş¼Ğ
+                    shutil.rmtree(file_path)  # åˆ é™¤å­æ–‡ä»¶å¤¹
 
 
 
@@ -266,38 +271,39 @@ class JDScraper(BaseScraper):
         html = self.driver.page_source
         doc = pq(html)
         items = doc('ul.gl-warp.clearfix > li').items()
-        slide_counter = 0  # Ã¿Ò³¿ªÊ¼Ç°³õÊ¼»¯ÏÂ»¬¼ÆÊıÆ÷
-        # ÔØÈëÀúÊ·¹şÏ£
+        slide_counter = 0  # æ¯é¡µå¼€å§‹å‰åˆå§‹åŒ–ä¸‹æ»‘è®¡æ•°å™¨
+        # è½½å…¥å†å²å“ˆå¸Œ
+        hash_json = static_hash_path("hash_store.json")
         hash_set = self.load_hash_set(hash_json)
 
 
         for item in items:
             try:
                 if self.count - 2 >= self.max_items:
-                    print(f"ÒÑ´ïµ½×î´ó×¥È¡ÊıÁ¿£º{self.max_items}£¬Í£Ö¹×¥È¡¡£")
+                    print(f"å·²è¾¾åˆ°æœ€å¤§æŠ“å–æ•°é‡ï¼š{self.max_items}ï¼Œåœæ­¢æŠ“å–ã€‚")
                     return False
 
                 if self.anti_spider_triggered == True:
-                    print(f"´¥·¢Ç¿ÖÆ·ç¿ØÕËºÅ¶³½á Ó¦Ç°Íù¾©¶«APP½â·â")
+                    print(f"è§¦å‘å¼ºåˆ¶é£æ§è´¦å·å†»ç»“ åº”å‰å¾€äº¬ä¸œAPPè§£å°")
                     return False
 
     #            if item.find('.title--RoseSo8H').text() or item.find('.headTitleText--hxVemljn').text():
     #                continue
 
-                # »ñÈ¡Í¼Æ¬±êÇ©
+                # è·å–å›¾ç‰‡æ ‡ç­¾
                 img_tag = item.find('img')
 
-                # ´¦ÀíÀÁ¼ÓÔØÇé¿ö£¬ÓÅÏÈÑ¡Ôñ data-lazy-img »òÕß src
+                # å¤„ç†æ‡’åŠ è½½æƒ…å†µï¼Œä¼˜å…ˆé€‰æ‹© data-lazy-img æˆ–è€… src
                 img_url = img_tag.attr('data-lazy-img') if img_tag.attr('data-lazy-img') else img_tag.attr('src')
 
-                # ÅĞ¶ÏÊÇ·ñÎªÏà¶ÔÂ·¾¶£¬Èç¹ûÊÇ£¬²¹È«ÎªÍêÕûµÄ URL
+                # åˆ¤æ–­æ˜¯å¦ä¸ºç›¸å¯¹è·¯å¾„ï¼Œå¦‚æœæ˜¯ï¼Œè¡¥å…¨ä¸ºå®Œæ•´çš„ URL
                 if img_url and img_url.startswith('//'):
-                    img_url = 'https:' + img_url  # ²¹È«Ïà¶ÔÂ·¾¶ÎªÍêÕû URL
+                    img_url = 'https:' + img_url  # è¡¥å…¨ç›¸å¯¹è·¯å¾„ä¸ºå®Œæ•´ URL
 
-                # ´òÓ¡»ò±£´æÍ¼Æ¬Á´½Ó
+                # æ‰“å°æˆ–ä¿å­˜å›¾ç‰‡é“¾æ¥
                 print(img_url)
 
-                # ÒÀ´Î³¢ÊÔ src / data-src / src2 / data-ks-lazyload
+                # ä¾æ¬¡å°è¯• src / data-src / src2 / data-ks-lazyload
                 img_url = (
                     img_tag.attr('src')
                     or img_tag.attr('data-src')
@@ -307,25 +313,25 @@ class JDScraper(BaseScraper):
                     or ""
                 ).strip()
 
-                # ĞŞ¸´ÒÔ // ¿ªÍ·»òÈ±ÉÙĞ­ÒéµÄÇé¿ö
+                # ä¿®å¤ä»¥ // å¼€å¤´æˆ–ç¼ºå°‘åè®®çš„æƒ…å†µ
                 if img_url.startswith("//"):
                     img_url = "https:" + img_url
                 elif img_url.startswith("/"):
                     img_url = "https://img.alicdn.com" + img_url
 
-                # ÅĞ¶ÏÍ¼Æ¬Á´½ÓÊÇ·ñÓĞĞ§²¢ÏÂÔØµ½±¾µØ
+                # åˆ¤æ–­å›¾ç‰‡é“¾æ¥æ˜¯å¦æœ‰æ•ˆå¹¶ä¸‹è½½åˆ°æœ¬åœ°
                 if not img_url or not isinstance(img_url, str) or not img_url.startswith(('/', '//', 'http')):
-                    self.logger.warning(f"[¾¯¸æ] µÚ {self.count - 1} ¸öÉÌÆ·Í¼Æ¬ URL ÎŞĞ§£¬Ìø¹ı²åÍ¼")
-                    self.logger.warning("ÉÌÆ· HTML Æ¬¶Î£º")
+                    self.logger.warning(f"[è­¦å‘Š] ç¬¬ {self.count - 1} ä¸ªå•†å“å›¾ç‰‡ URL æ— æ•ˆï¼Œè·³è¿‡æ’å›¾")
+                    self.logger.warning("å•†å“ HTML ç‰‡æ®µï¼š")
                     print(item.outer_html())
                     image_path = None
                 else:
                     image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
 
-                #±êÌâ
+                #æ ‡é¢˜
                 title_elem = item.find('.p-name em')
                 title = title_elem.text().strip() if title_elem else ''
-                #¼Û¸ñ
+                #ä»·æ ¼
                 price_elem = item.find('.p-price i')
                 price_text = price_elem.text().strip() if price_elem else ''          
                 try:
@@ -333,35 +339,35 @@ class JDScraper(BaseScraper):
                 except ValueError:
                     price = 0.0
 
-                #¾©¶«²»ÏÔÊ¾ÏúÁ¿
+                #äº¬ä¸œä¸æ˜¾ç¤ºé”€é‡
                 deal = 0
-                #ÎŞµØÖ·
+                #æ— åœ°å€
                 location = ''
-                #µêÆÌÃû³ÆºÍÁ´½Ó
+                #åº—é“ºåç§°å’Œé“¾æ¥
                 shop_elem = item.find('.p-shop a')
                 shop_name = shop_elem.text().strip() if shop_elem else ''
                 shop = shop_name
                 shop_href = shop_elem.attr('href') if shop_elem else ''
                 shop_url = 'https:' + shop_href if shop_href and shop_href.startswith('//') else shop_href
-                #ÆÀÂÛÊıÁ¿
+                #è¯„è®ºæ•°é‡
                 num_com = item.find('.p-commit a')
                 num_com = num_com.text().strip() if num_com else ''
-                #ÉÌÆ·Á´½Ó
+                #å•†å“é“¾æ¥
                 item_url = item.find('a[href^="//item.jd.com/"]')
                 item_url = item_url.attr('href') if item_url else ''
                 item_url = 'https:' + item_url if item_url and item_url.startswith('//') else item_url
-                # ==== ĞÂÔö¹şÏ£È¥ÖØ ====
+                # ==== æ–°å¢å“ˆå¸Œå»é‡ ====
                 item_dict = {'title': title, 'price': price}
-                features_url = shop_url or ''  # ÓÃÍ¼Æ¬Á´½Ó´úÌæÌØÕ÷Á´½Ó
+                features_url = shop_url or ''  # ç”¨å›¾ç‰‡é“¾æ¥ä»£æ›¿ç‰¹å¾é“¾æ¥
 
                 item_hash = self.compute_hash(item_dict, platform, features_url)
                 if item_hash in hash_set:
-                    # print(f"[Ìø¹ı] ÒÑ´æÔÚµÄÉÌÆ·: {title}")
+                    # print(f"[è·³è¿‡] å·²å­˜åœ¨çš„å•†å“: {title}")
                     continue
                 hash_set.add(item_hash)
                 # ======================
                 post = self.get_more(item_url)
-                # µ÷ÓÃ¸¸ÀàµÄ±£´æ·½·¨
+                # è°ƒç”¨çˆ¶ç±»çš„ä¿å­˜æ–¹æ³•
                 self.save_product_to_excel(
                     row=self.count,
                     title=title,
@@ -377,50 +383,50 @@ class JDScraper(BaseScraper):
                     image_path=image_path
                 )
                 self.count += 1
-                slide_counter += 1  # ÀÛ¼Ó¼ÆÊı
+                slide_counter += 1  # ç´¯åŠ è®¡æ•°
                 if slide_counter % 6 == 0:
-                    #print(f"ÒÑ×¥È¡ {slide_counter} ¸öÉÌÆ·£¬µ÷ÓÃÒ»´ÎÏÂ»¬º¯Êı...")
+                    #print(f"å·²æŠ“å– {slide_counter} ä¸ªå•†å“ï¼Œè°ƒç”¨ä¸€æ¬¡ä¸‹æ»‘å‡½æ•°...")
                     self.scroll_step_down()
                 self.human_sleep(1, 2)
 
             except Exception as e:
-                self.logger.warning(f"[!] ½âÎöÉÌÆ·Òì³£: {e}")
+                self.logger.warning(f"[!] è§£æå•†å“å¼‚å¸¸: {e}")
                 continue         
-        # ±£´æ¹şÏ£¼¯£¬·½±ãÏÂ´ÎÔöÁ¿ÅÀÈ¡
+        # ä¿å­˜å“ˆå¸Œé›†ï¼Œæ–¹ä¾¿ä¸‹æ¬¡å¢é‡çˆ¬å–
         self.save_hash_set(hash_set, hash_json)            
         return True
 
     def turn_page(self, page_number):
         try:
-            # ÕÒµ½Ò³ÂëÊäÈë¿ò
+            # æ‰¾åˆ°é¡µç è¾“å…¥æ¡†
             input_box = self.wait.until(EC.presence_of_element_located(
                 (By.CSS_SELECTOR, '#J_bottomPage .p-skip .input-txt')
             ))
             input_box.clear()
             input_box.send_keys(str(page_number))
 
-            # µã»÷¡°È·¶¨¡±°´Å¥
+            # ç‚¹å‡»â€œç¡®å®šâ€æŒ‰é’®
             confirm_btn = self.driver.find_element(
                 By.CSS_SELECTOR, '#J_bottomPage .p-skip .btn'
             )
             confirm_btn.click()
             self.captcha_handler.JDslider1(1,2) 
 
-            # µÈ´ıµ±Ç°Ò³Âë±ä¸üÎªÄ¿±êÒ³
+            # ç­‰å¾…å½“å‰é¡µç å˜æ›´ä¸ºç›®æ ‡é¡µ
             self.wait.until(EC.text_to_be_present_in_element(
                 (By.CSS_SELECTOR, '#J_bottomPage .p-num .curr'), str(page_number)
             ))
 
-            # Í£¶Ù·ÀÖ¹Æµ·±²Ù×÷
+            # åœé¡¿é˜²æ­¢é¢‘ç¹æ“ä½œ
             self.human_sleep(2, 3)
 
         except Exception as e:
-            self.logger.error(f"·­Ò³Ê§°Ü£¬Ä¿±êÒ³Âë {page_number}£º{e}")
+            self.logger.error(f"ç¿»é¡µå¤±è´¥ï¼Œç›®æ ‡é¡µç  {page_number}ï¼š{e}")
             self.save_page_html("error_page.html")
 
     def run(self):
         self.driver.get("https://www.jd.com/")
-        input("ÇëÔÚä¯ÀÀÆ÷ÖĞÊÖ¶¯µÇÂ¼¾©¶«£¬Èç³öÏÖ»¬¿é£¬ÇëÊÖ¶¯Íê³ÉÑéÖ¤ºó°´ Enter ¼ÌĞø......")
+        input("è¯·åœ¨æµè§ˆå™¨ä¸­æ‰‹åŠ¨ç™»å½•äº¬ä¸œï¼Œå¦‚å‡ºç°æ»‘å—ï¼Œè¯·æ‰‹åŠ¨å®ŒæˆéªŒè¯åæŒ‰ Enter ç»§ç»­......")
         self.search()
 
         if self.page_start != 1:
@@ -428,31 +434,32 @@ class JDScraper(BaseScraper):
             self.go_to_page(self.page_start)
 
         for page in range(self.page_start, self.page_end + 1):
-            if self.count - 2 >= self.max_items:  # ¼ì²éÊÇ·ñÒÑ´ïµ½×î´ó×¥È¡ÊıÁ¿
-                print(f"ÒÑ×¥È¡ {self.max_items} ¸öÉÌÆ·£¬Í£Ö¹×¥È¡")
-                break  # ´ïµ½×î´óÊıÁ¿Ê±Í£Ö¹×¥È¡
+            if self.count - 2 >= self.max_items:  # æ£€æŸ¥æ˜¯å¦å·²è¾¾åˆ°æœ€å¤§æŠ“å–æ•°é‡
+                print(f"å·²æŠ“å– {self.max_items} ä¸ªå•†å“ï¼Œåœæ­¢æŠ“å–")
+                break  # è¾¾åˆ°æœ€å¤§æ•°é‡æ—¶åœæ­¢æŠ“å–
 
             self.multi_scroll_up_down(8,8,-800,800)
             proceed = self.parse_page(page)
             if not proceed:
-                self.logger.warning(print(f"µÚ {page} Ò³ÅÀÈ¡Ê§°Ü£¬Ìø¹ı"))
-                continue  # Èç¹û¸ÃÒ³×¥È¡Ê§°Ü£¬Ìø¹ı
+                self.logger.warning(print(f"ç¬¬ {page} é¡µçˆ¬å–å¤±è´¥ï¼Œè·³è¿‡"))
+                continue  # å¦‚æœè¯¥é¡µæŠ“å–å¤±è´¥ï¼Œè·³è¿‡
 
             if page != self.page_end:
                 self.turn_page(page + 1)
 
         filename = f"{self.keyword}_{time.strftime('%Y%m%d-%H%M')}.xlsx"
-        self.excel.save(filename)
-        print(f"ÎÄ¼şÒÑ±£´æ: {filename}")
+        filepath = static_excel_path(filename)
+        self.excel.save(filepath)
+        print(f"æ–‡ä»¶å·²ä¿å­˜: {filename}")
         self.clean_image_folder()
         self.driver.quit()
 
 if __name__ == "__main__":
-    keyword = "·îÏÍ»ÆÌÒ"#input("ÊäÈëËÑË÷¹Ø¼ü´Ê£º")
-    start_page =1 # int(input("ÆğÊ¼Ò³Âë£º"))
-    end_page = 3 #int(input("ÖÕÖ¹Ò³Âë£º"))
-    max_items = 100 #int(input("×î¶à×¥È¡ÉÌÆ·ÊıÁ¿£º"))
-    insert_image = input("ÊÇ·ñ²åÈëÉÌÆ·Í¼Æ¬µ½ Excel£¿(y/n)£º").strip().lower() == "y"
+    keyword = "å¥‰è´¤é»„æ¡ƒ"#input("è¾“å…¥æœç´¢å…³é”®è¯ï¼š")
+    start_page =1 # int(input("èµ·å§‹é¡µç ï¼š"))
+    end_page = 3 #int(input("ç»ˆæ­¢é¡µç ï¼š"))
+    max_items = 100 #int(input("æœ€å¤šæŠ“å–å•†å“æ•°é‡ï¼š"))
+    insert_image = input("æ˜¯å¦æ’å…¥å•†å“å›¾ç‰‡åˆ° Excelï¼Ÿ(y/n)ï¼š").strip().lower() == "y"
 
     scraper = JDScraper(keyword, start_page, end_page, max_items=max_items)
     scraper.insert_image = insert_image
