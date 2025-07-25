@@ -281,10 +281,12 @@ class JDScraper(BaseScraper):
             try:
                 if self.count - 2 >= self.max_items:
                     print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
+                    self.save_hash_set(hash_set, hash_json)            
                     return False
 
                 if self.anti_spider_triggered == True:
                     print(f"触发强制风控账号冻结 应前往京东APP解封")
+                    self.save_hash_set(hash_set, hash_json)            
                     return False
 
     #            if item.find('.title--RoseSo8H').text() or item.find('.headTitleText--hxVemljn').text():

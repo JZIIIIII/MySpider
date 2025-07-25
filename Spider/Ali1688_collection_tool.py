@@ -311,10 +311,12 @@ class Ali_1688Scraper(BaseScraper):
             try: 
                 if self.count - 2 >= self.max_items:
                     print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
+                    self.save_hash_set(hash_set, hash_json)   
                     return False
 
                 if self.anti_spider_triggered == True:
                     print(f"触发强制风控账号冻结 应前往1688解封")
+                    self.save_hash_set(hash_set, hash_json)   
                     return False
 
                 # 滚动到当前商品，使其位于中央
@@ -558,7 +560,7 @@ class Ali_1688Scraper(BaseScraper):
 
 if __name__ == "__main__":
     keyword = "奉贤黄桃"#input("输入搜索关键词：")
-    start_page =2 # int(input("起始页码："))
+    start_page =1 # int(input("起始页码："))
     end_page = 2 #int(input("终止页码："))
     max_items = 5 #int(input("最多抓取商品数量："))
     insert_image = input("是否插入商品图片到 Excel？(y/n)：").strip().lower() == "y"

@@ -108,22 +108,36 @@ class BaseScraper:
         return hashlib.md5(base_str.encode('utf-8')).hexdigest()
     
 
-    def load_hash_set(self,json_path: str) -> set:
+    def load_hash_set(self, json_path: str) -> set:
         """
         从 JSON 文件中加载已处理过的哈希值集合
+        如果文件不存在或为空，则创建一个空的哈希文件
         """
         if not os.path.exists(json_path):
-            return set()
+            self.logger.warning(f"[调试] {json_path} 文件不存在，创建空文件")
+            with open(json_path, 'w', encoding='utf-8') as f:
+                json.dump([], f, indent=2, ensure_ascii=False)
+            return set()  # 返回空集合
+
+        # 检查文件是否为空
         with open(json_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
+            if not data:  # 如果数据为空
+                self.logger.info(f"[调试] {json_path} 文件为空，创建空哈希集合")
+                return set()
+
+        self.logger.info(f"[调试] 从 {json_path} 加载了 {len(data)} 个哈希值")
         return set(data)
 
-    def save_hash_set(self,hash_set: set, json_path: str):
+    def save_hash_set(self, hash_set: set, json_path: str):
         """
         将哈希集合保存为 JSON 文件
         """
+        self.logger.info(f"[调试] 正在保存哈希集合到文件: {json_path}")
+        self.logger.info(f"[调试] 哈希集合大小: {len(hash_set)}")
         with open(json_path, 'w', encoding='utf-8') as f:
             json.dump(list(hash_set), f, indent=2, ensure_ascii=False)
+        self.logger.info("[调试] 哈希集合已保存")
 
     def save_product_to_excel(self, row, title, price, deal, location, shop, post, item_url, shop_url, img_url, num_com, image_path=None):
         """

@@ -142,6 +142,7 @@ class PDDSpider(BaseScraper):
             items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
             for index in range(len(items)):
                 if len(results) >= max_items:
+
                     break
 
                 try:
@@ -249,6 +250,8 @@ class PDDSpider(BaseScraper):
                 confirm = input(f"已抓取 {len(results)} 条数据，是否确认终止并保存？(Y/N)：").strip().lower()
                 if confirm == 'y':
                     self.logger.warning("[!] 用户确认终止")
+                    self.save_hash_set(hash_set, hash_json)
+
                     return results  # 提前返回数据
                 else:
                     self.logger.info("[*] 用户选择继续，已复位风控标志")
