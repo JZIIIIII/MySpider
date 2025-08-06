@@ -75,6 +75,7 @@ class TaobaoScraper(BaseScraper):
         self.sheet = self.excel.active
         self.count = 2
         self._setup_excel()
+        self.hash_set = set()
         #self.anti_spider_triggered = False
         self.captcha_handler = CaptchaHandler(self.driver, self.logger)
         self.captcha_handler.Taosliderl()
@@ -328,8 +329,9 @@ class TaobaoScraper(BaseScraper):
         if hash_json:
             hash_json = static_hash_path(hash_json)
             hash_set = self.load_hash_set(hash_json)
+            self.hash_set.update(hash_set)  # 合并新的哈希池
         else:
-            hash_set = set()
+            hash_set  = self.hash_set
         slide_counter = 0  # 每页开始前初始化下滑计数器
 
         for item in items:
@@ -341,7 +343,7 @@ class TaobaoScraper(BaseScraper):
             if self.should_stop():
                 self.logger.info("检测到提前终止命令，保存已抓取内容并退出 parse_page。")
                 if hash_json:
-                    self.save_hash_set(hash_set, hash_json)  
+                    self.save_hash_set(self.hash_set, hash_json)  
                 return False
 
             try:
@@ -349,7 +351,7 @@ class TaobaoScraper(BaseScraper):
 
                     #print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
                     if hash_json:
-                        self.save_hash_set(hash_set, hash_json)  
+                        self.save_hash_set(self.hash_set, hash_json)  
                     return False
 
 
@@ -427,7 +429,7 @@ class TaobaoScraper(BaseScraper):
                 if item_hash in hash_set:
                     # print(f"[跳过] 已存在的商品: {title}")
                     continue
-                hash_set.add(item_hash)
+                self.hash_set.add(item_hash)
                 # ======================
                 # 判断图片链接是否有效并下载到本地
                 if not img_url or not isinstance(img_url, str) or not img_url.startswith(('/', '//', 'http')):
@@ -469,7 +471,7 @@ class TaobaoScraper(BaseScraper):
 
         # 保存哈希集，方便下次增量爬取
         if hash_json:
-            self.save_hash_set(hash_set, hash_json)
+            self.save_hash_set(self.hash_set, hash_json)  # 使用类成员变量 self.hash_set
 
         return True
 

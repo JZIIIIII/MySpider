@@ -7,12 +7,6 @@ import random
 
 
 class CaptchaHandler:
-    """
-    CaptchaHandler 类负责在不同电商平台（如淘宝、拼多多、京东、阿里）中，
-    检测是否触发了风控验证（如滑块验证或验证码）。
-    这些检测帮助爬虫判断是否需要人工干预或暂停操作。
-
-    """
     def __init__(self, driver, logger=None):
         self.driver = driver
         self.logger = logger

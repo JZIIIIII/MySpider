@@ -7,9 +7,6 @@ import logging
 
 
 class SpiderEventsController:
-    """
-    事件响应类 控制爬虫整体情况
-    """
     def __init__(self):
         self.logger = self._init_logger()  # 初始化日志
         self._pause_flag = threading.Event()
