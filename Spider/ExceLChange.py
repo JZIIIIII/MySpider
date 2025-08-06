@@ -11,6 +11,14 @@ MAX_IMG_WIDTH = 80
 MAX_IMG_HEIGHT = 80
 
 class ExcelProcessor:
+    """
+    类主要用于处理 Excel 文件中的商品数据和图片。其功能包括：加载 Excel 文件、
+    读取其中的数据并存储到链表中、功能包括：
+    去除重复项、根据指定标签筛选数据、调整图片尺寸并插入到 Excel 文件中、
+    最终将处理后的数据写入一个新的 Excel 文件。该类支持根据标签筛选商品信息，
+    可以选择保留或去除包含特定标签的商品行，并且支持对图片进行尺寸调整以适配 Excel 文件的展示。
+    """
+
     def __init__(self, file_path, img_col_letter='L'):
         self.file_path = file_path
         self.img_col_letter = img_col_letter

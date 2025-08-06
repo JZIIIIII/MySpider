@@ -16,7 +16,15 @@ from path_utils import resource_path , static_log_path
 from Spider.EventsController import SpiderEventsController
 
 
+
 class BaseScraper(SpiderEventsController):
+    '''
+    BaseScraper 是一个用于爬取商品信息的基础爬虫类，继承自 SpiderEventsController，
+    旨在提供一些常见的功能和工具方法，供具体爬虫实现继承和扩展。
+    该类主要使用 selenium-wire 和 undetected_chromedriver 来进行浏览器驱动管理，
+    提供防反爬和自动化爬取功能。
+    '''
+
     def __init__(self, headless=True, proxy=None):
         super().__init__()  # 初始化事件和日志
         self.driver = self.init_driver(headless=False, proxy=proxy)
@@ -192,9 +200,6 @@ class BaseScraper(SpiderEventsController):
             options.add_argument('--headless=new')
 
         user_agents = [
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.159 Safari/537.36",
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.82 Safari/537.36"
         ]
 
         options.add_argument(f"user-agent={random.choice(user_agents)}")
