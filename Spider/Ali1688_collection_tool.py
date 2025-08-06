@@ -24,31 +24,29 @@ from openpyxl.utils import get_column_letter
 from pyquery import PyQuery as pq
 from openpyxl import Workbook
 from openpyxl.drawing.image import Image as ExcelImage
-from BaseScraper import BaseScraper
-from AntiScrapingException import CaptchaHandler
+from Spider.BaseScraper import BaseScraper
+from Spider.AntiScrapingException import CaptchaHandler
 from path_utils import static_image_path ,static_hash_path , static_excel_path
 
 
 
 class Ali_1688Scraper(BaseScraper):
-    def __init__(self, keyword, start_page, end_page, max_items=100):
-        #super().__init__(headless=None, proxy=None)
+    def __init__(self, keyword, start_page, end_page, insert_image = True, max_items=100):
+        super().__init__(headless=True, proxy=None)
         self.keyword = keyword
         self.page_start = start_page
         self.page_end = end_page
         self.max_items = max_items
-        self.logger = self._init_logger()
-        self.driver = self.init_driver()
         self.wait = WebDriverWait(self.driver, 10)
         self.excel = Workbook()
         self.sheet = self.excel.active
         self.count = 2
-        self.insert_image = True
+        self.insert_image = insert_image
         self._setup_excel()
         #self.lock = threading.Lock()  # 用于同步的锁
         self.anti_spider_triggered = False
         # 创建 CaptchaHandler 实例并调用 wait_for_slider_manual 方法
-        self.captcha_handler = CaptchaHandler(self.driver)
+        self.captcha_handler = CaptchaHandler(self.driver, self.logger)
         self.captcha_handler.AliCaptcha()  # 调用风控
 
 
@@ -89,18 +87,18 @@ class Ali_1688Scraper(BaseScraper):
     '''
     def search(self):
         try:
-            print("尝试用定位搜索框和按钮...")
+            self.logger.info("尝试用定位搜索框和按钮...")
             search_box = self.wait.until(EC.element_to_be_clickable((By.ID, 'alisearch-input')))
             search_btn = self.wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'input-button')))
-            self.captcha_handler.AliCaptcha()
+            self.RiskPause(self.captcha_handler.AliCaptcha())
         except Exception as e:
-            print("搜索框定位失败")
+            self.logger.info("搜索框定位失败")
         try:
             search_box.clear()
             search_box.send_keys(self.keyword)
             self.human_sleep(1, 2)
             search_btn.click()
-            self.captcha_handler.AliCaptcha()
+            self.RiskPause(self.captcha_handler.AliCaptcha())
             self.human_sleep(2, 3)
         except Exception as e:
             self.logger.warning(f"搜索操作失败:{e}")
@@ -120,7 +118,7 @@ class Ali_1688Scraper(BaseScraper):
                 (By.CSS_SELECTOR, 'div.paging-to-page-button')))
             confirm_btn.click()
 
-            self.captcha_handler.AliCaptcha()
+            self.RiskPause(self.captcha_handler.AliCaptcha())
             self.human_sleep(2, 3)
 
             return None  # 表示跳转成功
@@ -174,7 +172,7 @@ class Ali_1688Scraper(BaseScraper):
                    .key_up(Keys.CONTROL) \
                    .perform()
 
-            self.captcha_handler.AliCaptcha()
+            self.RiskPause(self.captcha_handler.AliCaptcha())
             # 等待新标签页打开，最多等待5秒
             for _ in range(10):
                 handles = self.driver.window_handles
@@ -196,7 +194,13 @@ class Ali_1688Scraper(BaseScraper):
 
             new_tab = new_tabs[-1]
             self.driver.switch_to.window(new_tab)
-            self.captcha_handler.AliCaptcha()
+            self.RiskPause(self.captcha_handler.AliCaptcha())
+            self.wait_if_paused()
+            if self.should_stop():
+                self.logger.info("用户主动终止爬虫，跳过当前评论数解析")
+                self.stop()
+                return location,comment_count
+
             self.human_sleep(2, 3)
 
             # 获取评论数
@@ -226,7 +230,7 @@ class Ali_1688Scraper(BaseScraper):
                 if current_handle != main_window:
                     self.driver.close()
                     self.driver.switch_to.window(main_window)
-                    self.captcha_handler.AliCaptcha()
+                    self.RiskPause(self.captcha_handler.AliCaptcha())
 
             except Exception as e:
                 self.logger.warning(f"关闭标签页或切换主窗口失败，错误信息：{e}")
@@ -262,12 +266,14 @@ class Ali_1688Scraper(BaseScraper):
                 self.logger.error(f"图片处理异常: {e} | URL: {url}")
                 return None
 
-            # 统一使用 static_image_path 构造保存路径
-            file_name = f"{index:04d}.jpg"
-            file_path = static_image_path("1688", file_name)
+            # 使用硬编码路径
+            folder = "images/1688"  # 硬编码文件夹路径
+            if not os.path.exists(folder):
+                os.makedirs(folder)
 
-            # 确保目录存在
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
+            # 生成文件名
+            file_name = f"{index:04d}.jpg"
+            file_path = os.path.join(folder, file_name)  # 拼接路径
 
             # 保存为 jpg 文件
             img.save(file_path, format="JPEG")
@@ -279,17 +285,22 @@ class Ali_1688Scraper(BaseScraper):
             return None
 
     def clean_image_folder(self):
-        folder = static_image_path("1688")  # 获取图片根目录，不传filename只拿文件夹路径
+        folder = "images/1688"  # 使用硬编码路径获取文件夹
         if os.path.exists(folder):
             for filename in os.listdir(folder):
                 file_path = os.path.join(folder, filename)
-                if os.path.isfile(file_path) or os.path.islink(file_path):
-                    os.unlink(file_path)  # 删除文件或快捷方式
-                elif os.path.isdir(file_path):
-                    shutil.rmtree(file_path)  # 删除子文件夹
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        os.unlink(file_path)  # 删除文件或快捷方式
+                    elif os.path.isdir(file_path):
+                        shutil.rmtree(file_path)  # 删除子文件夹
+                except Exception as e:
+                    self.logger.warning(f"[!] 删除缓存文件失败: {file_path} | 错误: {e}")
+        else:
+            self.logger.error(f"[!] 文件夹不存在或不是目录：{folder}")
 
 
-    def parse_page(self, page_number, platform='Ali1688'):
+    def parse_page(self, page_number, platform='Ali1688',hash_json=None):
         # 获取当前页面所有商品元素（Selenium WebElement）
         items_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a.search-offer-item')
         # 用 pyquery 解析页面HTML，拿到所有商品节点
@@ -297,27 +308,44 @@ class Ali_1688Scraper(BaseScraper):
         doc = pq(html)
         items_data = list(doc('a.search-offer-item').items())
         # 载入历史哈希
-        hash_json = static_hash_path("hash_store.json")
-        hash_set = self.load_hash_set(hash_json)
+        if hash_json:
+            hash_json = static_hash_path(hash_json)
+            hash_set = self.load_hash_set(hash_json)
+        else:
+            hash_set = set()
+        slide_counter = 0  # 下滑计数器
 
         if len(items_elements) != len(items_data):
             self.logger.warning(f"警告：Selenium 找到商品数量 {len(items_elements)} 与 pyquery 找到数量 {len(items_data)} 不一致，可能页面未完全加载！")
             # 这里可以等待或重试，这里先简单返回False停止
-            return False
 
-        slide_counter = 0  # 下滑计数器
 
         for idx, (element, data) in enumerate(zip(items_elements, items_data)):
-            try: 
-                if self.count - 2 >= self.max_items:
-                    print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
-                    self.save_hash_set(hash_set, hash_json)   
-                    return False
+            if self.count - 2 >= self.max_items:
+                self.logger.info(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
+                if hash_json:
+                    self.save_hash_set(hash_set, hash_json)  
+                return False
 
+            # 如果暂停，则等待恢复
+            self.wait_if_paused()
+
+            # 检查是否被强制终止
+            if self.should_stop():
+                self.logger.info("检测到提前终止命令，保存已抓取内容并退出 parse_page。")
+                if hash_json:
+                    self.save_hash_set(hash_set, hash_json)  
+                return False
+
+            try: 
+
+
+                '''
                 if self.anti_spider_triggered == True:
                     print(f"触发强制风控账号冻结 应前往1688解封")
                     self.save_hash_set(hash_set, hash_json)   
                     return False
+                '''
 
                 # 滚动到当前商品，使其位于中央
                 self.driver.execute_script("""
@@ -432,7 +460,7 @@ class Ali_1688Scraper(BaseScraper):
                 if not img_url or not isinstance(img_url, str) or not img_url.startswith(('http', '//', '/')):
                     self.logger.warning(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图")
                     self.logger.warning("商品 HTML 片段：")
-                    print(data.outer_html())
+                    self.logger.info(data.outer_html())
                     image_path = None
                 else:
                     image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
@@ -466,7 +494,7 @@ class Ali_1688Scraper(BaseScraper):
                     except Exception as e:
                         self.logger.error(f"插入图片失败: {e}（图片路径: {image_path}）")
 
-                print(f"第{row - 1}个商品信息已保存")
+                self.logger.info(f"第{row - 1}个商品信息已保存")
                 self.count += 1
                 slide_counter += 1
 
@@ -477,7 +505,8 @@ class Ali_1688Scraper(BaseScraper):
                 self.logger.warning(f"[!] 解析商品异常: {e}")
                 continue      
 
-        self.save_hash_set(hash_set, hash_json)   
+        if hash_json:
+            self.save_hash_set(hash_set, hash_json)  
         return True
 
     def turn_page(self, page_number: int):
@@ -495,7 +524,7 @@ class Ali_1688Scraper(BaseScraper):
             confirm_btn.click()
 
             # 3. 滑块验证
-            self.captcha_handler.AliCaptcha()
+            self.RiskPause(self.captcha_handler.AliCaptcha())
 
             # 4. 等待翻页完成，适配不同结构的当前页码元素
             def page_loaded(driver):
@@ -516,9 +545,8 @@ class Ali_1688Scraper(BaseScraper):
 
     def run(self):
         self.driver.get("https://www.1688.com/")
-        input("请在浏览器中手动登录1688，如出现滑块，请手动完成验证后按 Enter 继续......")
+        self.wait_for_login()
         self.search()
-
         # 切换到搜索结果页
         handles = self.driver.window_handles
         self.driver.switch_to.window(handles[-1])
@@ -533,14 +561,23 @@ class Ali_1688Scraper(BaseScraper):
 
         for page in range(self.page_start, self.page_end + 1):
             if self.count - 2 >= self.max_items:
-                print(f"已抓取 {self.max_items} 个商品，停止抓取")
+                self.logger.info(f"已抓取 {self.max_items} 个商品，停止抓取")
+                break
+            self.wait_if_paused()
+            # 每页开始前检测停止和暂停
+            if self.should_stop():
+                self.logger.info("用户选择终止爬虫，提前结束运行。")
                 break
 
             self.multi_scroll_up_down(8, 8, -800, 800)
             proceed = self.parse_page(page)
             if not proceed:
-                self.logger.warning(f"第 {page} 页爬取失败，跳过")
-                continue
+                if self.should_stop():
+                    self.logger.info(f"用户选择终止爬虫，提前结束运行。")
+                    break
+                else:
+                    self.logger.warning(f"第 {page} 页爬取失败，跳过该页。")
+                    continue
 
             if page != self.page_end:
                 # 翻页跳转下一页
@@ -551,10 +588,29 @@ class Ali_1688Scraper(BaseScraper):
 
         # 保存文件
         filename = f"{self.keyword}_{time.strftime('%Y%m%d-%H%M')}.xlsx"
-        filepath = static_excel_path(filename)
+        # 使用硬编码路径
+        folder = "excel"  # 直接使用硬编码的路径
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+        # 构建完整的文件路径
+        filepath = os.path.join(folder, filename)
         self.excel.save(filepath)
-        print(f"文件已保存: {filename}")
+        self.logger.info(f"文件已保存: {filename}")
         self.clean_image_folder()
+        # 获取当前窗口的句柄
+        current_window_handle = self.driver.current_window_handle
+
+        # 关闭当前窗口
+        self.driver.close()
+
+        # 获取所有标签页的句柄
+        all_handles = self.driver.window_handles
+
+        # 切换到并关闭剩余的标签页
+        for handle in all_handles:
+            if handle != current_window_handle:
+                self.driver.switch_to.window(handle)
+                self.driver.close()  # 关闭剩余的标签页
         self.driver.quit()
 
 
@@ -565,7 +621,5 @@ if __name__ == "__main__":
     max_items = 5 #int(input("最多抓取商品数量："))
     insert_image = input("是否插入商品图片到 Excel？(y/n)：").strip().lower() == "y"
 
-    scraper = Ali_1688Scraper(keyword, start_page, end_page, max_items=max_items)
-    scraper.insert_image = insert_image
+    scraper = Ali_1688Scraper(keyword, start_page, end_page,insert_image, max_items=max_items)
     scraper.run()
-

@@ -13,40 +13,26 @@ from selenium.webdriver.support import expected_conditions as EC
 from openpyxl.drawing.image import Image as ExcelImage
 import hashlib
 from path_utils import resource_path , static_log_path
+from Spider.EventsController import SpiderEventsController
 
 
-class BaseScraper:
+class BaseScraper(SpiderEventsController):
     def __init__(self, headless=True, proxy=None):
-        self.logger = self._init_logger()  # 先初始化日志
-        self.driver = self.init_driver(headless=headless, proxy=proxy)
+        super().__init__()  # 初始化事件和日志
+        self.driver = self.init_driver(headless=False, proxy=proxy)
 
-    def _init_logger(self):
-        logger = logging.getLogger("Spider")
-        logger.setLevel(logging.DEBUG)  # 可调为 INFO 或 ERROR
-
-        log_file_path = static_log_path("Mypider.log")
-
-        file_handler = logging.FileHandler(log_file_path, encoding="utf-8")
-        file_handler.setLevel(logging.DEBUG)
-
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(logging.INFO)
-
-        formatter = logging.Formatter(
-            '%(asctime)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S'
-        )
-        file_handler.setFormatter(formatter)
-        console_handler.setFormatter(formatter)
-
-        if not logger.hasHandlers():
-            logger.addHandler(file_handler)
-            logger.addHandler(console_handler)
-
-        return logger
 
     def human_sleep(self, min_time=0.5, max_time=1.5):
-        time.sleep(random.uniform(min_time, max_time))        
+        time.sleep(random.uniform(min_time, max_time))     
+
+    def RiskPause(self,RiskBool = False):
+        slider_detected = RiskBool
+        if slider_detected:
+            self.logger.warning("检测到滑块，触发暂停等待用户处理...")
+            self.pause()  # 暂停任务
+            # 此处可以向前端报告状态（WebSocket 或状态接口等）
+        self.wait_if_paused()  # 一直等到 resume 被调用
+        
 
     def save_page_html(self, filename="page_snapshot.html", wait_for_element=None, timeout=10):
         """ 保存当前页面的 HTML 内容到文件，确保页面完全加载 """
@@ -180,9 +166,9 @@ class BaseScraper:
                 img.width, img.height = 80, 80
                 self.sheet.add_image(img, f'L{row}')
             except Exception as e:
-                print(f"插入图片失败: {e}（图片路径: {image_path}）")
+                self.logger.warning(f"插入图片失败: {e}（图片路径: {image_path}）")
 
-        print(f"第{row - 1}个商品信息已保存")    
+        self.logger.info(f"第{row - 1}个商品信息已保存")    
 
 
     def init_driver(self, headless=None, proxy=None):

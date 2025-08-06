@@ -25,29 +25,27 @@ from openpyxl.worksheet.hyperlink import Hyperlink
 
 from pyquery import PyQuery as pq
 from openpyxl import Workbook
-from BaseScraper  import BaseScraper
-
-from AntiScrapingException import CaptchaHandler
+from Spider.BaseScraper  import BaseScraper
+from Spider.AntiScrapingException import CaptchaHandler
 from path_utils import static_image_path ,static_hash_path , static_excel_path
 
 
-class PDDSpider(BaseScraper):
+class PDDScraper(BaseScraper):
     def __init__(self, keyword, start_page, end_page, max_items=100, insert_image=True):
+        super().__init__(headless=True, proxy=None)
         self.keyword = keyword
         self.page_start = start_page
         self.page_end = end_page
         self.max_items = max_items
         self.insert_image = insert_image
         self.count = 2
-        self.logger = self._init_logger()
-        self.driver = self.init_driver()
         self.wait = WebDriverWait(self.driver, 10)
         self.excel = Workbook()
         self.sheet = self.excel.active
         self._setup_excel()
         self.empty_data_count = 0
         self.anti_spider_triggered = False
-        self.captcha_handler = CaptchaHandler(self.driver)
+        self.captcha_handler = CaptchaHandler(self.driver, self.logger)
         self.captcha_handler.PDDsliderl()  # 调用风控
 
     def _setup_excel(self):
@@ -78,8 +76,7 @@ class PDDSpider(BaseScraper):
 
             # 调用封装好的模拟点击函数
             return self.simulate_click(element)
-            self.captcha_handler.PDDsliderl()
-
+            self.RiskPause(self.captcha_handler.PDDsliderl())
         except Exception as e:
             self.logger.error(f"搜索框模拟点击失败:{e}")
             self.save_page_html("error_page.html")
@@ -101,7 +98,7 @@ class PDDSpider(BaseScraper):
             ))
         except Exception:
 
-            print("请尝试点击首页搜索框进入搜索页面...")
+            self.logger.info("请尝试点击首页搜索框进入搜索页面...")
             return  # 找不到搜索框，结束函数，等待用户点击假搜索框进入搜索页
 
         try:
@@ -129,13 +126,16 @@ class PDDSpider(BaseScraper):
             self.logger.error(f"搜索失败:{e}")
             self.save_page_html("error_page.html")
 
-    def parse_all_showcases(self, max_items=10 ,platform='PDD',hash_json='hash_store.json'): 
+    def parse_all_showcases(self, max_items=10 ,platform='PDD',hash_json=None): 
         results = []
         seen_titles = set()
         processed_count = 0
         # 载入历史哈希
-        hash_json = static_hash_path("hash_store.json")
-        hash_set = self.load_hash_set(hash_json)
+        if hash_json:
+            hash_json = static_hash_path(hash_json)
+            hash_set = self.load_hash_set(hash_json)
+        else:
+            hash_set = set()
         previous_results_count = 0  # 记录每次下滑前的商品数
 
         for _ in range(30):  # 最多下滑 30 次
@@ -144,6 +144,18 @@ class PDDSpider(BaseScraper):
                 if len(results) >= max_items:
 
                     break
+
+                self.RiskPause(self.captcha_handler.PDDsliderl())
+                self.RiskPause(self.anti_spider_triggered)
+                # 如果暂停，则等待恢复
+                self.wait_if_paused()
+                # 检查是否被强制终止
+                if self.should_stop():
+                    self.logger.info("检测到提前终止命令，保存已抓取内容并退出 parse_page。")
+                    if hash_json:
+                        self.save_hash_set(hash_set, hash_json)  
+                    return results
+
 
                 try:
 
@@ -155,8 +167,7 @@ class PDDSpider(BaseScraper):
                     item_html = elem.get_attribute('outerHTML')
                     item_doc = pq(item_html)
 
-                    self.captcha_handler.PDDsliderl()
-
+                    self.RiskPause(self.captcha_handler.PDDsliderl())
                     title = item_doc('div._3ANzdjkc').text().strip()
                     if not title or title in seen_titles:
                         continue
@@ -225,6 +236,8 @@ class PDDSpider(BaseScraper):
                     }
                     results.append(result)
                     processed_count += 1
+                    self.count = processed_count + 2
+                    self.logger.info (self.count)
                     if processed_count % 2 == 0:
                         self.scroll_step_down(base_step=800)
                         time.sleep(1)
@@ -236,8 +249,9 @@ class PDDSpider(BaseScraper):
             if len(results) >= max_items:
                 break
 
+
             if len(results) == previous_results_count:
-                print(f"[!] 商品数量没有增加，停止继续下滑。")
+                self.logger.info(f"[!] 商品数量没有增加，停止继续下滑。")
                 break
             previous_results_count = len(results)
 
@@ -246,20 +260,22 @@ class PDDSpider(BaseScraper):
 
             # 在每次下滑后检查是否触发风控
             if getattr(self, 'anti_spider_triggered', False):
-                self.logger.warning("[!] 触发风控，准备终止")
-                confirm = input(f"已抓取 {len(results)} 条数据，是否确认终止并保存？(Y/N)：").strip().lower()
-                if confirm == 'y':
-                    self.logger.warning("[!] 用户确认终止")
-                    self.save_hash_set(hash_set, hash_json)
-
-                    return results  # 提前返回数据
+                self.logger.warning("[!] 触发风控，暂停爬虫等待用户处理")
+                self.pause()
+                self.wait_if_paused()
+                if self.should_stop():
+                    self.logger.warning("[!] 用户选择终止，提前退出任务")
+                    if hash_json:
+                        self.save_hash_set(hash_set, hash_json)
+                    return results
                 else:
-                    self.logger.info("[*] 用户选择继续，已复位风控标志")
+                    self.logger.info("[*] 用户选择继续，重置风控状态")
                     self.anti_spider_triggered = False
-
-        print(f"\n共提取到 {len(results)} 个商品（上限：{max_items}）")
+                
+        self.logger.info(f"\n共提取到 {len(results)} 个商品（上限：{max_items}）")
         # 保存哈希集，方便下次增量爬取
-        self.save_hash_set(hash_set, hash_json)
+        if hash_json:
+            self.save_hash_set(hash_set, hash_json)  
 
         return results
 
@@ -304,14 +320,14 @@ class PDDSpider(BaseScraper):
                         excel_img.anchor = f'{img_col_letter}{i}'
                         ws.add_image(excel_img)
                     except Exception as e:
-                        self.logger.error(print(f"[!] 图片插入失败: {img_path} | 错误: {e}"))
+                        self.logger.error(f"[!] 图片插入失败: {img_path} | 错误: {e}")
                 else:
-                    self.logger.warning(print(f"[!] 图片路径无效或文件不存在: {img_path}"))
-
+                    self.logger.warning(f"[!] 图片路径无效或文件不存在: {img_path}")
+            
         # 保存 Excel 文件
         wb.save(filename)
 
-        print(f"[√] 数据已保存到 Excel：{filename}")
+        self.logger.info(f"[√] 数据已保存到 Excel：{filename}")
 
     def webp_to_png(self, webp_bytes, save_path):
         try:
@@ -333,7 +349,13 @@ class PDDSpider(BaseScraper):
         """
         # 清理标题中的特殊字符，避免路径错误
         filename = re.sub(r'[\\/:*?"<>|]', '_', title[:20].strip().replace(' ', '_')) + ".jpg"
-        path = static_image_path(platform, filename)  # 使用统一路径生成器
+
+        # 硬编码路径，直接指定保存路径
+        folder = f"images/{platform}"  # 使用硬编码的路径
+        if not os.path.exists(folder):
+            os.makedirs(folder)  # 如果目录不存在，则创建
+
+        path = os.path.join(folder, filename)  # 生成完整路径
 
         # 拼多多常见图片链接修复
         if img_url.startswith("//"):
@@ -359,14 +381,14 @@ class PDDSpider(BaseScraper):
                 img = Image.open(BytesIO(resp.content))
 
                 if img.format == 'WEBP':
-                    print(f"[!] 图片为WEBP，转换为PNG: {img_url}")
+                    self.logger.info(f"[!] 图片为WEBP，转换为PNG: {img_url}")
                     png_path = os.path.splitext(path)[0] + ".png"
                     result = self.webp_to_png(resp.content, png_path)
                     return result
 
                 img = img.convert('RGB')
                 img.save(path, format='JPEG')
-                print(f"图片已保存: {path}")
+                self.logger.info(f"图片已保存: {path}")
                 return path
 
             except UnidentifiedImageError:
@@ -423,20 +445,25 @@ class PDDSpider(BaseScraper):
             # 先滚动到元素中间，避免被遮挡
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
             time.sleep(0.5)
-
+            '''
             # 等待遮挡元素消失（如果知道遮挡的class，替换下）
             try:
                 self.wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, 'div.浮动遮挡层的class')))
             except TimeoutException:
                 pass  # 或打印日志
-
+            '''
             # 直接用 JS 点击，绕过遮挡
             self.driver.execute_script("arguments[0].click();", element)
         
             # 获取当前页面 URL
             current_url = self.driver.current_url
             shop_url = self.clean_url(current_url)
-            self.captcha_handler.PDDsliderl()
+            self.RiskPause(self.captcha_handler.PDDsliderl())
+            self.wait_if_paused()
+            if self.should_stop():
+                self.logger.info(f"用户选择终止爬虫，提前结束运行。")
+                self.stop()  # 立即停止爬虫
+                return 0 , None, None, None   # 返回 0，表示终止操作
         
             # 等待详情页关键元素加载
             try:
@@ -525,7 +552,8 @@ class PDDSpider(BaseScraper):
         """
         清空指定平台的图片缓存目录，默认是 images/PDD
         """
-        folder = static_image_path(subfolder)  # 统一路径管理
+        # 使用硬编码的路径，不再调用 static_image_path
+        folder = f"images/{subfolder}"
 
         if os.path.exists(folder) and os.path.isdir(folder):
             for filename in os.listdir(folder):
@@ -547,17 +575,26 @@ class PDDSpider(BaseScraper):
         except:
             self.logger.error("登录拼多多失败")
 
-        input("请登录拼多多并手动跳转到首页后按回车继续...")
+        self.wait_for_login()
 
         self.click_fake_search_box()
         self.search()
-        self.captcha_handler.PDDsliderl()
+        self.RiskPause(self.captcha_handler.PDDsliderl())
         data = self.parse_all_showcases(max_items=self.max_items)
 
         if data:
+            # 使用硬编码路径
             filename = f"{self.keyword}_{time.strftime('%Y%m%d_%H%M')}.xlsx"
-            filepath = static_excel_path(filename)
-            self.save_to_excel(data, filepath)
+            folder = "excel"  # 硬编码路径
+            if not os.path.exists(folder):
+                os.makedirs(folder)  # 如果目录不存在，则创建
+
+            # 生成完整的文件路径
+            filepath = os.path.join(folder, filename)
+
+            self.save_to_excel(data, filepath)  # 保存数据到 Excel
+        self.clear_image_cache()  # 清理图片缓存
+        self.driver.close()
         self.driver.quit()
 
 
@@ -569,5 +606,6 @@ if __name__ == "__main__":
     mi = int(input("最大商品数："))
     show_img = input("是否插入图片 (y/n)：").strip().lower() == 'y'
 
-    spider = PDDSpider(kw, sp, ep, mi, show_img)
+    spider = PDDScraper(kw, sp, ep, mi, show_img)
     spider.run()
+
