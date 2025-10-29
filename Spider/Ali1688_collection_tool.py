@@ -141,21 +141,23 @@ class Ali_1688Scraper(BaseScraper):
     def get_more(self, url):
         comment_count = 0
         location = ''
+        combined_text = ''
         main_window = self.driver.current_window_handle
 
         try:
             # 提取商品ID，防止href匹配失败
-            item_id_match = re.search(r'/offer/(\d+)\.html', url)
+            item_id_match = re.search(r'offerId=(\d+)', url)
             if not item_id_match:
-                self.logger.warning("无法提取商品ID，跳过")
+                self.logger.warning("无法提取 offerId，跳过")
                 return location, comment_count
             item_id = item_id_match.group(1)
 
-            # 限制 href 必须包含 detail.1688.com
-            title_xpath = f'//a[contains(@href, "/offer/{item_id}.html") and contains(@href, "detail.1688.com")]'
+            # 🔹新版页面的详情链接 (detail.m.1688.com)
+            title_xpath = f'//a[contains(@href, "offerId={item_id}") and contains(@href, "detail.m.1688.com")]'
             title_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, title_xpath)))
 
             href = title_element.get_attribute('href')
+            # self.logger.info(f"即将点击链接：{href}")
             #print(f"即将点击链接：{href}")
 
             # 获取尺寸并设置更合适的偏移
@@ -204,6 +206,32 @@ class Ali_1688Scraper(BaseScraper):
 
             self.human_sleep(2, 3)
 
+            try:
+                trade_info = self.driver.find_element(By.CSS_SELECTOR, "div.trade-info.v-flex")
+                texts = self.driver.execute_script("""
+                    let trade = arguments[0];
+                    let nodes = trade.childNodes;
+                    let texts = [];
+                    for(let i=0; i<nodes.length; i++) {
+                        let node = nodes[i];
+                        if(node.nodeType === 3) { // 文本节点
+                            let t = node.textContent.trim();
+                            if(t) texts.push(t);
+                        } else if(node.nodeType === 1) { // 元素节点
+                            texts.push(node.innerText.trim());
+                        }
+                    }
+                    return texts;
+                """, trade_info)
+                # 拼接从第二个元素开始的所有文本（过滤空）
+                combined_text = ''.join(t for t in texts[1:] if t)
+            except Exception as e:
+                self.logger.warning(f"获取 trade-info 文本失败: {e}")
+                combined_text = ""  # 失败则为空字符串或你需要的默认值
+
+            # 后续用 combined_text 即可
+            self.logger.warning(f"拼接结果:{combined_text}")
+
             # 获取评论数
             try:
                 element = self.driver.find_element(By.CSS_SELECTOR, 'span.brackets')
@@ -237,7 +265,7 @@ class Ali_1688Scraper(BaseScraper):
                 self.logger.warning(f"关闭标签页或切换主窗口失败，错误信息：{e}")
                 self.save_page_html("error_page.html")
 
-        return location, comment_count
+        return combined_text,location, comment_count
 
     def download_image(self, url, index):
         try:
@@ -410,7 +438,7 @@ class Ali_1688Scraper(BaseScraper):
                         price = 0.0
                 else:
                     price = 0.0
-
+                '''
                 try:
                     desc_text_elem = data.find('.col-desc_after .offer-desc-item .desc-text')
                     deal_text = desc_text_elem.text().strip() if desc_text_elem else "0"
@@ -427,6 +455,7 @@ class Ali_1688Scraper(BaseScraper):
                         deal = 0
                 except Exception:
                     deal = 0
+                '''
 
                 desc_text_elems = data.find('.col-desc').find('.desc-text')
                 texts = [elem.text().strip() for elem in desc_text_elems.items()]
@@ -468,7 +497,7 @@ class Ali_1688Scraper(BaseScraper):
                     image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
 
                 # 获取额外信息（地区、评论数）
-                location, num_com = self.get_more(item_url)
+                deal , location, num_com = self.get_more(item_url)
 
                 # 写入 Excel
                 row = self.count
@@ -499,10 +528,11 @@ class Ali_1688Scraper(BaseScraper):
                 self.logger.info(f"第{row - 1}个商品信息已保存")
                 self.count += 1
                 slide_counter += 1
-
+                '''
                 if slide_counter % 6 == 0:
                     self.scroll_step_down()
                 self.human_sleep(1, 2)
+                '''
             except Exception as e:
                 self.logger.warning(f"[!] 解析商品异常: {e}")
                 continue      
@@ -548,7 +578,9 @@ class Ali_1688Scraper(BaseScraper):
 
     def run(self):
         self.driver.get("https://www.1688.com/")
+
         self.wait_for_login()
+        #input("test")
         self.search()
         # 切换到搜索结果页
         handles = self.driver.window_handles
@@ -618,7 +650,7 @@ class Ali_1688Scraper(BaseScraper):
 
 
 if __name__ == "__main__":
-    keyword = "奉贤黄桃"#input("输入搜索关键词：")
+    keyword = "山东黄桃"#input("输入搜索关键词：")
     start_page =1 # int(input("起始页码："))
     end_page = 2 #int(input("终止页码："))
     max_items = 5 #int(input("最多抓取商品数量："))

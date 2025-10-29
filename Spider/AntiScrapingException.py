@@ -4,6 +4,7 @@ from selenium.webdriver.common.by import By
 from selenium import webdriver
 import time
 import random
+from selenium.common.exceptions import NoSuchElementException
 
 
 class CaptchaHandler:
@@ -112,12 +113,19 @@ class CaptchaHandler:
         有风控返回 True，否则返回 False。
         并使用 logger 记录检测结果。
         """
-        risk_elements = self.driver.find_elements(By.CLASS_NAME, 'JDJRV-slide-main')
-        if risk_elements:
-            self.logger.warning("检测到京东滑块风控组件，需外部处理暂停或终止。")
-            return True
-        else:
+        try:
+            risk_elements = self.driver.find_elements(By.CLASS_NAME, 'JDJRV-slide-main')
+            if risk_elements:
+                self.logger.warning("检测到京东滑块风控组件，需外部处理暂停或终止。")
+                return True
+            else:
+                self.logger.info("未检测到京东滑块风控，继续正常爬取。")
+                return False
+        except NoSuchElementException:
             self.logger.info("未检测到京东滑块风控，继续正常爬取。")
+            return False
+        except Exception as e:
+            self.logger.error(f"检测京东滑块风控时发生错误: {e}")
             return False
 
     def JDslider2(self):
@@ -127,17 +135,18 @@ class CaptchaHandler:
         并使用 logger 记录检测结果。
         """
         try:
-            # 查找风控验证按钮（"快速验证"按钮）
             risk_elements = self.driver.find_elements(By.CLASS_NAME, 'verifyBtn')
-
             if risk_elements:
                 self.logger.warning("检测到京东风控验证组件（快速验证按钮），需外部处理暂停或终止。")
                 return True
             else:
                 self.logger.info("未检测到京东风控验证组件，继续正常爬取。")
                 return False
+        except NoSuchElementException:
+            self.logger.info("未检测到京东风控验证组件，继续正常爬取。")
+            return False
         except Exception as e:
-            self.logger.error(f"检测京东风控时发生错误: {e}")
+            self.logger.error(f"检测京东风控验证组件时发生错误: {e}")
             return False
 
 
@@ -148,16 +157,16 @@ class CaptchaHandler:
         并使用 logger 记录检测结果。
         """
         try:
-            # 查找验证码元素
             captcha_element = self.driver.find_element(By.XPATH, "//div[@class='captcha']")
-        
             if captcha_element:
                 self.logger.warning("检测到阿里风控验证码组件，需外部处理暂停或终止。")
                 return True
+        except NoSuchElementException:
+            # 明确捕获元素未找到异常，说明页面无验证码
+            self.logger.info("未检测到阿里风控验证码组件，继续正常爬取。")
         except Exception as e:
-            # 如果没有找到验证码相关元素，记录日志并返回 False
-            self.logger.info(f"未检测到阿里风控验证码组件，继续正常爬取。错误信息: {e}")
-    
+            # 捕获其它异常，防止程序崩溃
+            self.logger.error(f"检测验证码时发生异常: {e}")
         return False
 
     

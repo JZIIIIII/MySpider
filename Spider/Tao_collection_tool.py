@@ -176,28 +176,24 @@ class TaobaoScraper(BaseScraper):
             self.logger.error(f"翻页失败: {e}")
             self.save_page_html("error_page.html")
             
-    def get_comment_count(self, url):
+    def get_comment_count(self, item_id): 
         """
         打开商品详情页并提取评论数。
         支持风控处理与暂停/终止控制。
         """
         count = 0
+        deal_text = ''
         main_window = self.driver.current_window_handle
 
         try:
-            # 提取商品ID
-            item_id_match = re.search(r'id=(\d+)', url)
-            if not item_id_match:
-                self.logger.warning("无法提取商品ID，跳过")
-                return 0
-            item_id = item_id_match.group(1)
-
-            # 定位商品链接
-            link_xpath = f'//a[contains(@href, "{item_id}")]'
+            # 精确定位商品 <a> 标签，避免重复点击第一个 item
+            link_xpath = f'//a[@data-spm-act-id="{item_id}"]'
             link_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, link_xpath)))
 
-            # Ctrl + 点击打开新标签页
-            ActionChains(self.driver).key_down(Keys.CONTROL).click(link_element).key_up(Keys.CONTROL).perform()
+            # 滚动到可见并点击
+            self.driver.execute_script("arguments[0].scrollIntoView({block:'center'});", link_element)
+            self.human_sleep(0.5, 1)
+            link_element.click()
             self.human_sleep(1, 2)
 
             # 等待新标签页打开
@@ -209,7 +205,7 @@ class TaobaoScraper(BaseScraper):
             else:
                 self.logger.warning("新标签页未打开")
                 self.save_page_html("error_page.html")
-                return 0
+                return 0, 0
 
             # 切换到新标签页
             new_tab = [h for h in self.driver.window_handles if h != main_window][-1]
@@ -224,30 +220,65 @@ class TaobaoScraper(BaseScraper):
             if self.should_stop():
                 self.logger.info("用户主动终止爬虫，跳过当前评论数解析")
                 self.stop()
-                return 0
+                return 0, 0
 
-            # 等待评论模块加载
-            self.wait.until(EC.presence_of_element_located(
-                (By.XPATH, '//span[contains(text(),"有图") or contains(text(),"视频")]')
-            ))
-            comment_text = self.driver.find_element(
-                By.XPATH,
-                '//span[contains(text(),"有图") or contains(text(),"视频")]/preceding-sibling::span[1]'
-            ).text
+            # ===== 以下保持你原有的销量和评论获取逻辑 =====
+            try:
+                # 等待销量模块加载
+                self.wait.until(EC.presence_of_element_located(
+                    (By.XPATH, '//div[contains(@class,"salesDesc--Z35wP98o") or contains(@class,"salesDesc--mOo6I5Bc")]')
+                ))
 
-            # 解析评论数量
-            m = re.search(r'\(([一-龥\d,.+万]+)\)', comment_text)
-            if m:
-                num_str = m.group(1).replace('+', '').replace(',', '')
-                if '万' in num_str:
-                    count = int(float(num_str.replace('万', '')) * 10000)
-                else:
-                    count = int(num_str)
-            else:
-                self.logger.info("未匹配到评论数文本，默认为 0")
+                deal_text = self.driver.find_element(
+                    By.XPATH,
+                    '//div[contains(@class,"salesDesc--Z35wP98o") or contains(@class,"salesDesc--mOo6I5Bc")]'
+                ).text.strip()
+
+                if not deal_text:
+                    deal_text = self.driver.execute_script(
+                        "return arguments[0].textContent;", 
+                        self.driver.find_element(
+                            By.XPATH,
+                            '//div[contains(@class,"salesDesc--Z35wP98o") or contains(@class,"salesDesc--mOo6I5Bc")]'
+                        )
+                    ).strip()
+
+                self.logger.info(f"获取销量文本: {deal_text}")
+                deal_text = deal_text.lstrip('·').strip()
+
+            except Exception as e:
+                self.logger.warning(f"获取销量失败: {e}")
+                deal_text = "商品详情获取销量失败 可能为0"
+
+            try:
+                # 等待至少一个 span 出现
+                self.wait.until(lambda d: d.find_elements(
+                    By.CSS_SELECTOR, "span.tabDetailItemTitle--bJtPXTNu"
+                ))
+
+                # 遍历所有 span，找到文本包含 '用户评价' 的
+                comment_spans = self.driver.find_elements(By.CSS_SELECTOR, "span.tabDetailItemTitle--bJtPXTNu")
+                count = 0
+                for span in comment_spans:
+                    text = span.text.strip()
+                    if text.startswith("用户评价"):
+                        m = re.search(r'\(([\d,.+万]+)\)', text)
+                        if m:
+                            num_str = m.group(1).replace('+', '').replace(',', '')
+                            if '万' in num_str:
+                                count = int(float(num_str.replace('万', '')) * 10000)
+                            else:
+                                count = int(num_str)
+                        else:
+                            self.logger.info(f"未匹配到评论数文本: {text}，默认为 0")
+                        break  # 找到就退出循环
+
+            except TimeoutException:
+                self.logger.warning("评论模块加载超时，评论数设为 0")
+                count = 0
 
         except Exception as e:
-            self.logger.warning(f"获取评论数失败：{e}")
+            self.logger.warning(f"获取详情失败：{e}")
             self.save_page_html("error_page.html")
 
         finally:
@@ -260,8 +291,8 @@ class TaobaoScraper(BaseScraper):
             except Exception as e:
                 self.logger.error(f"关闭标签页或切换窗口失败：{e}")
                 self.save_page_html("error_page.html")
-
-        return count
+    
+        return deal_text, count
 
     def download_image(self, url, index):
         try:
@@ -325,6 +356,7 @@ class TaobaoScraper(BaseScraper):
         html = self.driver.page_source
         doc = pq(html)
         items = doc('div.content--CUnfXXxv > div > div').items()
+        #content--CUnfXXxv
         # 载入历史哈希
         if hash_json:
             hash_json = static_hash_path(hash_json)
@@ -348,21 +380,9 @@ class TaobaoScraper(BaseScraper):
 
             try:
                 if self.count - 2 >= self.max_items:
-
-                    #print(f"已达到最大抓取数量：{self.max_items}，停止抓取。")
                     if hash_json:
                         self.save_hash_set(self.hash_set, hash_json)  
                     return False
-
-
-                # 检查是否触发了强制风控
-                '''
-                if self.anti_spider_triggered == True:
-                    print(f"触发强制风控账号冻结 应前往淘宝APP解封")
-                    if hash_json:
-                        self.save_hash_set(hash_set, hash_json)  
-                    return False
-                '''
 
                 if item.find('.title--RoseSo8H').text() or item.find('.headTitleText--hxVemljn').text():
                     continue
@@ -376,52 +396,53 @@ class TaobaoScraper(BaseScraper):
                 if not img_tag:
                     img_tag = item.find('img')
 
-                # 获取图片 URL，首先检查 src 或者 data-lazy-img
+                # 获取图片 URL
                 img_url = (
-                    img_tag.attr('src')  # img 标签的 src 属性
-                    or img_tag.attr('data-lazy-img')  # img 标签的 data-lazy-img 属性（你的 HTML 示例中是这个）
-                    or img_tag.attr('data-src')  # 其他可能的属性
-                    or img_tag.attr('src2')
-                    or img_tag.attr('data-ks-lazyload')
-                    or img_tag.attr('data-lazyload')
-                    or ""
+                    img_tag.attr('src') or img_tag.attr('data-lazy-img') or
+                    img_tag.attr('data-src') or img_tag.attr('src2') or
+                    img_tag.attr('data-ks-lazyload') or img_tag.attr('data-lazyload') or ""
                 ).strip()
-
-                # 修复以 // 开头或缺少协议的情况
                 if img_url.startswith("//"):
                     img_url = "https:" + img_url
                 elif img_url.startswith("/"):
                     img_url = "https://img.alicdn.com" + img_url
 
-                title = item.find('.title--qJ7Xg_90 span').text()
-
+                title = item.find('.title--ASSt27UY').text()
                 price_text = item.find('.innerPriceWrapper--aAJhHXD4').text().replace('\n', '')
-
                 try:
                     price = float(price_text)
                 except ValueError:
                     price = 0.0
 
-                deal = item.find('.realSales--XZJiepmt').text().replace("万", "0000").split("人")[0].split("+")[0]
-                deal = int(deal) if deal.isdigit() else 0
+                deal = ''
                 location = item.find('.procity--wlcT2xH9 span').text()
                 shop = item.find('.shopNameText--DmtlsDKm').text()
                 post = "包邮" if "包邮" in item.find('.subIconWrapper--Vl8zAdQn').text() else "/"
-                item_url = item.find('.doubleCardWrapperAdapt--mEcC7olq').attr('href')
-                #url补全
+
+                # ====== 修改部分：获取 item_id 和 item_url ======
+                a_tag = item.find('.doubleCardWrapperAdapt--mEcC7olq')
+                if a_tag:
+                    item_id = a_tag.attr('data-spm-act-id')
+                    item_url = a_tag.attr('href') or ''
+                    self.logger.info(f"id == {item_id}")
+                else:
+                    self.logger.info("未找到目标元素")
+                    item_id = None
+                    item_url = ''
+
+                # URL 补全
                 if item_url.startswith("//"):
                     item_url = "https:" + item_url
                 elif item_url.startswith("/"):
                     item_url = "https://item.taobao.com" + item_url
 
                 shop_url = item.find('.TextAndPic--grkZAtsC a').attr('href')
-                #url补全
                 if shop_url.startswith("//"):
                     shop_url = "https:" + shop_url
                 elif shop_url.startswith("/"):
                     shop_url = "https://click.simba.taobao.com" + shop_url
-            
-                # ==== 新增哈希去重 ====
+
+                # ==== 哈希去重 ====
                 item_dict = {'title': title, 'price': price}
                 features_url = shop_url or ''  # 用图片链接代替特征链接
 
@@ -439,12 +460,12 @@ class TaobaoScraper(BaseScraper):
                     image_path = None
                 else:
                     image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
+                if item_id:
+                    deal, num_com = self.get_comment_count(item_id)
+                else:
+                    deal, num_com = '', 0
 
-                num_com = self.get_comment_count(item_url)
-                #num_com = 0
-
-
-                # 调用父类的保存方法
+                # 之后保存商品信息
                 self.save_product_to_excel(
                     row=self.count,
                     title=title,
@@ -459,12 +480,13 @@ class TaobaoScraper(BaseScraper):
                     num_com=num_com,
                     image_path=image_path
                 )
+
                 self.count += 1
-                slide_counter += 1  # 累加计数
+                slide_counter += 1
                 if slide_counter % 6 == 0:
-                    #print(f"已抓取 {slide_counter} 个商品，调用一次下滑函数...")
                     self.scroll_step_down()
                 self.human_sleep(1, 2)
+
             except Exception as e:
                 self.logger.warning(f"[!] 解析商品异常: {e}")
                 continue
@@ -500,6 +522,7 @@ class TaobaoScraper(BaseScraper):
 
         # 等待前端登录完成
         self.wait_for_login()
+        #input("如出现滑块，请手动完成验证后按 Enter 继续...")
 
         if self.page_start != 1:
             self.multi_scroll_up_down(8, 8, -800, 800)

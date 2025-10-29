@@ -85,21 +85,41 @@ class JDScraper(BaseScraper):
 
     def search(self):
         try:
-            self.logger.info("尝试用定位搜索框和按钮...")
-            search_box = self.wait.until(EC.element_to_be_clickable((By.ID, 'key')))
-            search_btn = self.wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'button')))
-        except Exception as e:
-            self.logger.error("搜索框定位失败")
-        try:
+            self.logger.info("尝试定位搜索框和按钮...")
+
+            # 优先尝试新版结构
+            try:
+                search_box = self.wait.until(
+                    EC.element_to_be_clickable((By.CLASS_NAME, 'searchBar_search_input__dNdN4'))
+                )
+                search_btn = self.wait.until(
+                    EC.element_to_be_clickable((By.CSS_SELECTOR, 'button.searchBar_search_btn__R\\+2Tg'))
+                )
+                self.logger.info("使用新版搜索框定位成功。")
+            except Exception:
+                self.logger.warning("新版定位失败，尝试旧版结构...")
+                # 兼容旧版京东首页
+                search_box = self.wait.until(
+                    EC.presence_of_element_located((By.ID, 'key'))
+                )
+                search_btn = self.wait.until(
+                    EC.element_to_be_clickable((By.CLASS_NAME, 'button'))
+                )
+                self.logger.info("使用旧版搜索框定位成功。")
+
+            # 执行搜索操作
             search_box.clear()
             search_box.send_keys(self.keyword)
             self.human_sleep(1, 2)
             search_btn.click()
-            self.human_sleep(1, 2)
+            self.logger.info(f"已点击搜索按钮，关键词：{self.keyword}")
+
+            # 检查滑块验证码
             self.RiskPause(self.captcha_handler.JDslider1())
             self.RiskPause(self.captcha_handler.JDslider2())
+
         except Exception as e:
-            self.logger.warning(f"搜索操作失败:{e}")
+            self.logger.error(f"搜索操作失败: {e}")
 
     def go_to_page(self, page_number):
         self.RiskPause(self.captcha_handler.JDslider1())
@@ -130,24 +150,30 @@ class JDScraper(BaseScraper):
 
     def get_more(self, url):
         post_text = ''
+        num_com = 0
         main_window = self.driver.current_window_handle
 
         try:
-            # 提取商品ID，防止 href 匹配失败
+            # 提取商品ID
             item_id_match = re.search(r'(\d+)', url)
             if not item_id_match:
                 self.logger.warning("无法提取商品ID，跳过")
-                return ''
+                return '', 0
             item_id = item_id_match.group(1)
 
-            # 定位商品卡片（通过商品ID来定位卡片，而非点击 <a> 标签）
-            card_xpath = f'//div[@data-sku="{item_id}"]//div[@class="_card_2xp6d_40"]'
-            card_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, card_xpath)))
+            # 定位商品卡片的可点击区域（新版京东结构）
+            # 优先点击 a[href*="item.jd.com"]
+            card_xpath = f'//div[@data-sku="{item_id}"]//a[contains(@href, "item.jd.com")]'
+            try:
+                card_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, card_xpath)))
+            except Exception:
+                # 兼容旧版 fallback
+                card_xpath = f'//div[@data-sku="{item_id}"]//div[contains(@class, "_card_")]'
+                card_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, card_xpath)))
 
-            # 模拟点击卡片，确保点击区域正确
+            # 模拟点击商品卡片
             self.logger.debug(f"即将点击商品卡片：{item_id}")
-            actions = ActionChains(self.driver)
-            actions.click(card_element).perform()  # 点击商品卡片本身，而非 <a> 标签
+            ActionChains(self.driver).move_to_element(card_element).click().perform()
             self.human_sleep(1, 2)
 
             # 等待新标签页打开
@@ -159,44 +185,47 @@ class JDScraper(BaseScraper):
             else:
                 self.logger.warning("新标签页未打开")
                 self.save_page_html("error_page.html")
-                return ''
+                return '', 0
 
             # 切换到新标签页
-            handles = self.driver.window_handles
-            new_tabs = [h for h in handles if h != main_window]
+            new_tabs = [h for h in self.driver.window_handles if h != main_window]
             if not new_tabs:
                 self.logger.warning("找不到新标签页句柄")
                 self.save_page_html("error_page.html")
-                return ''
+                return '', 0
 
             new_tab = new_tabs[-1]
             self.driver.switch_to.window(new_tab)
             self.human_sleep(1, 2)
-            self.RiskPause(self.captcha_handler.JDslider1())  # 处理验证码
+
+            # 检查风控滑块
+            self.RiskPause(self.captcha_handler.JDslider1())
             self.RiskPause(self.captcha_handler.JDslider2())
-            # 等待页面加载并获取包邮信息
+            self.wait_if_paused()
+            if self.should_stop():
+                self.logger.info("用户主动终止爬虫，跳过当前评论数解析")
+                self.stop()
+                return '', 0
+
+            # 获取包邮信息
             try:
-                self.wait.until(EC.presence_of_element_located(
-                    (By.XPATH, '//span[contains(@class, "free-shipping")]')
+                post_elem = self.wait.until(EC.presence_of_element_located(
+                    (By.XPATH, '//span[contains(text(), "包邮") or contains(text(), "免邮")]')
                 ))
-                # 获取包邮信息
-                post_text = self.driver.find_element(
-                    By.XPATH,
-                    '//span[contains(@class, "free-shipping")]'
-                ).text.strip()
+                post_text = post_elem.text.strip()
             except Exception:
-                post_text = ''  # 如果没有找到包邮信息，返回空字符串
-            
+                post_text = ''
+
+            # 获取评论数量（新版京东页面结构不同）
             try:
-                comment_elem = self.wait.until(EC.presence_of_element_located(
-                    (By.XPATH, '//div[contains(@class, "comment-title")]')
-                ))
+                # 尝试新版评论模块标题
+                comment_elem = self.wait.until(EC.presence_of_element_located((
+                    By.XPATH,
+                    '//div[contains(@class, "comment") and (contains(text(), "评价") or contains(text(), "评论"))]'
+                )))
                 comment_text = comment_elem.text.strip()
-                match = re.search(r'买家评价\(([^)]+)\)', comment_text)
-                if match:
-                    num_com = match.group(1)  # 例如 "500+"
-                else:
-                    num_com = 0
+                match = re.search(r'(\d+[万+]?)', comment_text)
+                num_com = match.group(1) if match else 0
             except Exception:
                 num_com = 0
 
@@ -210,13 +239,13 @@ class JDScraper(BaseScraper):
                 if self.driver.current_window_handle != main_window:
                     self.driver.close()
                     self.driver.switch_to.window(main_window)
-                    self.RiskPause(self.captcha_handler.JDslider1())  # 处理验证码
+                    self.RiskPause(self.captcha_handler.JDslider1())
                     self.RiskPause(self.captcha_handler.JDslider2())
             except Exception as e:
                 self.logger.warning(f"关闭标签页或切换回主窗口失败: {e}")
                 self.save_page_html("error_page.html")
 
-        return post_text,num_com  # 返回包邮信息（例如：“包邮” 或 空字符串）
+        return post_text, num_com
 
     def download_image(self, url, index):
         try:
@@ -287,7 +316,7 @@ class JDScraper(BaseScraper):
     def parse_page(self, page_number, platform='JD',hash_json=None):
         html = self.driver.page_source
         doc = pq(html)
-        items = doc('div._wrapper_2xp6d_3.plugin_goodsCardWrapper._row_6_2xp6d_13').items()
+        items = doc('div.plugin_goodsCardWrapper').items()
         slide_counter = 0  # 每页开始前初始化下滑计数器
         # 载入历史哈希
         if hash_json:
@@ -357,13 +386,12 @@ class JDScraper(BaseScraper):
 
 
                 # 标题
-                title_elem = item.find('span._text_1x4i2_30')
+                title_elem = item.find('span._text_1g56m_31')
                 title = title_elem.attr('title') if title_elem else ''
 
                 # 价格
-                price_elem = item.find('span._price_1tn4o_13')
+                price_elem = item.find('span._price_uqsva_14')
                 price_text = price_elem.text().strip() if price_elem else ''
-                import re
                 price_num_str = re.sub(r'[^\d.]', '', price_text)
                 try:
                     price = float(price_num_str)
@@ -372,9 +400,12 @@ class JDScraper(BaseScraper):
 
                 # 销量提取
                 deal_elem = item.find('span._goods_volume_1xkku_1 span[title]')
-                deal_text = deal_elem.attr('title') if deal_elem else ''
-                deal = deal_text.replace('已售', '').strip() if deal_text else ''
-
+                if len(deal_elem) > 0:
+                    deal_text = deal_elem.eq(0).attr('title') or ''
+                    deal_text = deal_text.strip()
+                    deal = deal_text  # 保留“已售”字样
+                else:
+                    deal = '销量查找失败'
                 # 无地址
                 location = ''
 
@@ -486,6 +517,7 @@ class JDScraper(BaseScraper):
         self.driver.get("https://www.jd.com/")
         # 等待前端登录完成
         self.wait_for_login()
+        #input("test")
         self.search()
 
         if self.page_start > 1:
@@ -534,10 +566,10 @@ class JDScraper(BaseScraper):
         self.driver.quit()
 
 if __name__ == "__main__":
-    keyword = "奉贤黄桃"#input("输入搜索关键词：")
+    keyword = "宝可梦传说阿尔宙斯"#input("输入搜索关键词：")
     start_page =1 # int(input("起始页码："))
     end_page = 3 #int(input("终止页码："))
-    max_items = 100 #int(input("最多抓取商品数量："))
+    max_items = 2 #int(input("最多抓取商品数量："))
     insert_image = input("是否插入商品图片到 Excel？(y/n)：").strip().lower() == "y"
 
     scraper = JDScraper(keyword, start_page, end_page,insert_image, max_items=max_items)

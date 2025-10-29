@@ -15,7 +15,6 @@ import hashlib
 from path_utils import resource_path , static_log_path
 from Spider.EventsController import SpiderEventsController
 
-
 class BaseScraper(SpiderEventsController):
     def __init__(self, headless=True, proxy=None):
         super().__init__()  # 初始化事件和日志
