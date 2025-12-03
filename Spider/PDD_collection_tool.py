@@ -5,11 +5,14 @@ import re
 import requests
 import os
 import shutil
-
+import regex
+import json
+from datetime import datetime
 from io import BytesIO
 from PIL import Image
 from PIL import UnidentifiedImageError
 from tkinter import filedialog
+from fuzzywuzzy import fuzz
 
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from seleniumwire import webdriver  # selenium-wire 用于拦截请求
@@ -31,12 +34,13 @@ from path_utils import static_image_path ,static_hash_path , static_excel_path
 
 
 class PDDScraper(BaseScraper):
-    def __init__(self, keyword, start_page, end_page, max_items=100, insert_image=True):
+    def __init__(self, keyword, start_page, end_page, max_items=100, insert_image=True, pierce_span=[0,0]):
         super().__init__(headless=True, proxy=None)
         self.keyword = keyword
         self.page_start = start_page
         self.page_end = end_page
         self.max_items = max_items
+        self.pierce_span = pierce_span
         self.insert_image = insert_image
         self.count = 2
         self.wait = WebDriverWait(self.driver, 10)
@@ -48,6 +52,15 @@ class PDDScraper(BaseScraper):
         self.captcha_handler = CaptchaHandler(self.driver, self.logger)
         self.captcha_handler.PDDsliderl()  # 调用风控
 
+    # 定义 XPATH 常量
+    XPATH_SALES_PATTERNS = [
+        '//div[contains(@class,"AsbGpQv_")]/span[contains(text(),"已拼")]',
+        '//div[contains(@class,"AsbGpQv_")]/span[contains(text(),"已抢")]',
+        '//div[contains(@class,"BD_8SBr6")]/span[contains(text(),"总售")]',
+        '//div[contains(@class,"BD_8SBr6")]/span[2][contains(text(),"已抢") or contains(text(),"已拼")]',
+        '//div[contains(@class,"BD_8SBr6")]/span[contains(text(),"已拼")]',
+    ]
+    
     def _setup_excel(self):
         # 根据修改后的 save_to_excel 调整表头顺序
         headers = ['Num', 'Title', 'Price', 'Deal', 'shop_url', 'CommentNum', 'ShopName', 'Postage', 'Tags', 'Image']
@@ -126,158 +139,185 @@ class PDDScraper(BaseScraper):
             self.logger.error(f"搜索失败:{e}")
             self.save_page_html("error_page.html")
 
-    def parse_all_showcases(self, max_items=10 ,platform='PDD',hash_json=None): 
+    def inject_pdd_fetch_xhr_interceptor(self, driver, max_cache=50):
+        """
+        注入拦截器，捕获 fetch 和 XMLHttpRequest 类型的 /proxy/api/search 响应。
+        每次响应缓存到数组中，最多保留 max_cache 条，最新的在数组末尾。
+        """
+        driver.execute_script(f"""
+        (function() {{
+            if (window._pdd_interceptor_installed) return;
+            window._pdd_interceptor_installed = true;
+
+            // 缓存数组
+            window._pdd_responses = [];
+
+            // ====== fetch 拦截 ======
+            const origFetch = window.fetch;
+            window.fetch = async (...args) => {{
+                const response = await origFetch(...args);
+                try {{
+                    const url = args[0];
+                    if (typeof url === 'string' && url.includes('/proxy/api/search')) {{
+                        const cloned = response.clone();
+                        cloned.json().then(data => {{
+                            if (data) {{
+                                if (window._pdd_responses.length >= {max_cache}) window._pdd_responses.shift();
+                                window._pdd_responses.push(data);
+                                console.log('[拦截到 fetch 搜索响应]', data);
+                            }}
+                        }}).catch(err => console.warn('[fetch JSON 解析失败]', err));
+                    }}
+                }} catch (err) {{ console.warn('[fetch 拦截异常]', err); }}
+                return response;
+            }};
+
+            // ====== XHR 拦截 ======
+            const origXHRSend = XMLHttpRequest.prototype.send;
+            XMLHttpRequest.prototype.send = function(body) {{
+                this.addEventListener('load', function() {{
+                    try {{
+                        const url = this.responseURL || '';
+                        if (url.includes('/proxy/api/search') && this.responseType === '' && this.responseText) {{
+                            const data = JSON.parse(this.responseText);
+                            if (data) {{
+                                if (window._pdd_responses.length >= {max_cache}) window._pdd_responses.shift();
+                                window._pdd_responses.push(data);
+                                console.log('[拦截到 XHR 搜索响应]', data);
+                            }}
+                        }}
+                    }} catch(e) {{ console.warn('[XHR 解析失败]', e); }}
+                }});
+                origXHRSend.apply(this, arguments);
+            }};
+        }})();
+        """)
+
+    def get_pdd_search_responses(self, driver):
+        """返回缓存的响应数组（可能为空），最新的在数组末尾。"""
+        return driver.execute_script("return window._pdd_responses || [];")
+
+    def clear_pdd_search_responses(self, driver):
+        """清空缓存，避免重用旧数据。"""
+        driver.execute_script("window._pdd_responses = [];")
+
+    def parse_all_showcases(self, max_items=100, platform='PDD', hash_json=None, max_empty_scrolls=5):
+        """
+        采集 PDD 商品信息，最多 max_items 条。
+        支持 fetch/XHR 懒加载补充，处理滚动到底情况。
+        max_empty_scrolls: 连续队列为空超过这个次数则认为到底
+        """
         results = []
         seen_titles = set()
         processed_count = 0
-        # 载入历史哈希
+        empty_scroll_count = 0  # 连续空队列计数
+
+        self.inject_pdd_fetch_xhr_interceptor(self.driver)
+
         if hash_json:
             hash_json = static_hash_path(hash_json)
             hash_set = self.load_hash_set(hash_json)
         else:
             hash_set = set()
-        previous_results_count = 0  # 记录每次下滑前的商品数
 
-        for _ in range(30):  # 最多下滑 30 次
-            items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
-            for index in range(len(items)):
-                if len(results) >= max_items:
+        while len(results) < max_items:
+            # 风控/暂停检测
+            self.RiskPause(self.captcha_handler.PDDsliderl())
+            self.RiskPause(self.anti_spider_triggered)
+            self.wait_if_paused()
+            if self.should_stop():
+                self.logger.info("检测到提前终止命令，保存已抓取内容并退出 parse_all_showcases。")
+                if hash_json:
+                    self.save_hash_set(hash_set, hash_json)
+                break
 
+            # 取下一条商品
+            g = self.get_next_PDD_item(clear_after_fetch=True)
+            queue_len = len(getattr(self, "_pdd_items_queue", []))
+            self.logger.info(f"[队列状态] _pdd_items_queue长度: {queue_len}, 已采集: {len(results)}")
+
+            if not g:
+                empty_scroll_count += 1
+                if empty_scroll_count >= max_empty_scrolls:
+                    self.logger.info(f"连续 {max_empty_scrolls} 次滚动未获取新商品，认为已到底，停止采集。")
                     break
+                # 队列空 -> 下滑加载更多
+                self.scroll_step_down(base_step=1200)
+                time.sleep(2)
+                continue
 
-                self.RiskPause(self.captcha_handler.PDDsliderl())
-                self.RiskPause(self.anti_spider_triggered)
-                # 如果暂停，则等待恢复
-                self.wait_if_paused()
-                # 检查是否被强制终止
-                if self.should_stop():
-                    self.logger.info("检测到提前终止命令，保存已抓取内容并退出 parse_page。")
-                    if hash_json:
-                        self.save_hash_set(hash_set, hash_json)  
-                    return results
+            empty_scroll_count = 0  # 重置空队列计数
 
+            title = g.get("title", "").strip()
+            if not title or title in seen_titles:
+                continue
+            seen_titles.add(title)
 
+            # 哈希去重
+            item_dict = {'title': title, 'price': g.get("price", "")}
+            features_url = g.get("img_url", "") or ""
+            item_hash = self.compute_hash(item_dict, platform, features_url)
+            if item_hash in hash_set:
+                self.logger.info(f"[跳过] 已存在商品: {title}")
+                continue
+            hash_set.add(item_hash)
+
+            # ==== 价格区间过滤 ====
+            min_p, max_p = self.pierce_span
+
+            # 防止用户输入反区间 [100, 50]
+            if min_p > max_p:
+                min_p, max_p = max_p, min_p
+
+            # 只有当区间不是 [0,0] 时才进行过滤
+            if not (min_p == 0 and max_p == 0):
                 try:
+                    price_value = float(g.get("price", 0))
+                except:
+                    continue  # 无法解析价格 → 跳过
 
-                    items = self.driver.find_elements(By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')
-                    if index >= len(items):
-                        continue
-
-                    elem = items[index]
-                    item_html = elem.get_attribute('outerHTML')
-                    item_doc = pq(item_html)
-
-                    self.RiskPause(self.captcha_handler.PDDsliderl())
-                    title = item_doc('div._3ANzdjkc').text().strip()
-                    if not title or title in seen_titles:
-                        continue
-                    seen_titles.add(title)
-
-                    price = ''
-                    price_dec_elem = item_doc('span._2aP8LGPL')
-                    if price_dec_elem:
-                        price_int = price_dec_elem.prev().text()
-                        price_dec = price_dec_elem.text()
-                        price = f"{price_int}{price_dec}"
-                    elif not price:
-                        price_elem = item_doc('span._3_U04GgA')
-                        if price_elem:
-                            coupon_tag = price_elem('span._2nKWnaqa')
-                            if coupon_tag:
-                                price = price_elem('span._3f_Cp5GQ + span').text()
-                            else:
-                                price = price_elem('span._3f_Cp5GQ + span').text()
-
-
-                    tag_list = [tag.text() for tag in item_doc('div._299OVZvt > div').items()]
-                    tags_str = ' '.join(tag_list)
-
-                    img_elem = item_doc('div._1o7l_Qm- img')
-                    img_url = img_elem.attr('src') or img_elem.attr('data-src') or img_elem.attr('data-lazy')
-
-                    deal_num_elem = item_doc('div[style*="width: 255px;"] span')
-                    deal_num_text = deal_num_elem.text().strip()
-                    deal_num = ''.join([ch for ch in deal_num_text if ch.isdigit()])
-                    if not deal_num:
-                        deal_num = 0
-
-                    # ==== 新增哈希去重 ====
-                    item_dict = {'title': title, 'price': price}
-                    features_url = img_url or ''  # 用图片链接代替特征链接
-
-                    item_hash = self.compute_hash(item_dict, platform, features_url)
-                    if item_hash in hash_set:
-                        self.logger.info(f"[跳过] 已存在的商品: {title}")
-                        continue
-                    hash_set.add(item_hash)
-                    # ======================
-
-                    # 只有通过哈希检查才调用 get_more，节省性能
-
-                    comment_count, shop_name, postage_info, shop_url = self.get_more(elem)
-                    if comment_count is None:
-                        comment_count = 0
-
-                    img_path = None
-                    if self.insert_image and img_url:
-                        img_path = self.download_image(img_url, title)
-
-                    result = {
-                        'title': title,
-                        'price': price,
-                        'deal_num': deal_num,
-                        'shop_url': shop_url,
-                        'comment_count': comment_count,
-                        'shop_name': shop_name,
-                        'postage_info': postage_info,
-                        'tags': tags_str,
-                        'img_url': img_url,
-                        'img_path': img_path
-                    }
-                    results.append(result)
-                    processed_count += 1
-                    self.count = processed_count + 2
-                    self.logger.info (self.count)
-                    if processed_count % 2 == 0:
-                        self.scroll_step_down(base_step=800)
-                        time.sleep(1)
-
-                except Exception as e:
-                    self.logger.warning(f"[!] 处理商品失败: {e}")
+                # 不在闭区间 → 跳过该商品
+                if not (min_p <= price_value <= max_p):
+                    self.logger.info(f"[价格过滤] {price_value} 不在区间 [{min_p}, {max_p}] 内，跳过")
                     continue
+            # ======================
 
-            if len(results) >= max_items:
-                break
+            # 下载图片
+            img_url = g.get("img_url", "")
+            img_path = None
+            if self.insert_image and img_url:
+                img_path = self.download_image(img_url, title)
 
+            # 组装结果
+            result = {
+                'title': title,
+                'price': g.get("price", ""),
+                'deal_num': g.get("deal", 0),
+                'shop_url': g.get("shop_url", ""),
+                'comment_count': g.get("comment_count", ""),
+                'shop_name': g.get("shop_name", ""),
+                'postage_info': "包邮" if g.get("free_shipping") else "",
+                'tags': "",
+                'img_url': img_url,
+                'img_path': img_path
+            }
+            results.append(result)
+            processed_count += 1
+            self.count = processed_count
+            self.logger.info(f"[{processed_count}] 采集到商品: {title}")
 
-            if len(results) == previous_results_count:
-                self.logger.info(f"[!] 商品数量没有增加，停止继续下滑。")
-                break
-            previous_results_count = len(results)
+            # 每采 2 条滚动一次
+            if processed_count % 2 == 0:
+                self.scroll_step_down(base_step=800)
+                time.sleep(2)
 
-            self.scroll_step_down(base_step=1200)
-            time.sleep(1)
-
-            # 在每次下滑后检查是否触发风控
-            if getattr(self, 'anti_spider_triggered', False):
-                self.logger.warning("[!] 触发风控，暂停爬虫等待用户处理")
-                self.pause()
-                self.wait_if_paused()
-                if self.should_stop():
-                    self.logger.warning("[!] 用户选择终止，提前退出任务")
-                    if hash_json:
-                        self.save_hash_set(hash_set, hash_json)
-                    return results
-                else:
-                    self.logger.info("[*] 用户选择继续，重置风控状态")
-                    self.anti_spider_triggered = False
-                
         self.logger.info(f"\n共提取到 {len(results)} 个商品（上限：{max_items}）")
-        # 保存哈希集，方便下次增量爬取
         if hash_json:
-            self.save_hash_set(hash_set, hash_json)  
+            self.save_hash_set(hash_set, hash_json)
 
         return results
+
+
 
     def save_to_excel(self, results, filename='results.xlsx'):
         wb = Workbook()
@@ -285,7 +325,7 @@ class PDDScraper(BaseScraper):
         ws.title = '商品信息'
 
         # 表头
-        headers = ['标题', '价格', '成交量', '店铺连接', '评论数量', '店铺名称', '包邮信息', '标签', '图片']
+        headers = ['标题', '价格', '成交量', '店铺链接', '评论数量', '店铺名称', '包邮信息', '标签', '图片']
         ws.append(headers)
 
         # 设置图片插入列列宽（第9列）
@@ -435,56 +475,111 @@ class PDDScraper(BaseScraper):
             self.logger.error(f"Error cleaning URL: {e}")
             return url
 
+    def parse_pdd_search_response_data(self, search_data):
+        """
+        解析 fetch 拦截到的 PDD 搜索响应，返回商品原始信息。
+        """
+        results = []
+        try:
+            items = search_data.get("items") or []
+            for item in items:
+                item_data = item.get("item_data", {})
+                goods_model = item_data.get("goods_model", {})
+
+                results.append({
+                    "goods_name": goods_model.get("goods_name", ""),
+                    "link_url": goods_model.get("link_url", ""),
+                    "mall_name": goods_model.get("mall_name", ""),
+                    "sales_tip": goods_model.get("sales_tip", ""),
+                    "sales": goods_model.get("sales", 0),
+                    "price_info": goods_model.get("price_info", 0),
+                    "hd_thumb_url": goods_model.get("hd_thumb_url", ""),
+                    "hd_url": goods_model.get("hd_url", ""),
+                    "tag_list": goods_model.get("tag_list", []),
+                })
+        except Exception as e:
+            self.logger.warning(f"[!] 解析 PDD 搜索响应失败: {repr(e)}")
+        return results
+
+    def normalize_text(self, s):
+        """统一商品名，便于匹配"""
+        if not s:
+            return ""
+        s = s.lower().strip()
+        # 去掉空格、连字符、下划线
+        s = re.sub(r'[\s\-–_]+', '', s)
+        # 去掉 Unicode 控制符、符号
+        s = regex.sub(r'\p{C}|\p{So}', '', s)
+        # 保留中文、字母、数字
+        s = regex.sub(r'[^\p{IsHan}\w]', '', s)
+        return s
+
+    def fuzzy_match(self, a, b, threshold=80):
+        """模糊匹配"""
+        score = max(fuzz.partial_ratio(a, b), fuzz.token_set_ratio(a, b))
+        return score >= threshold
+
+    
     def get_more(self, element):
+        """
+        进入详情页，获取评论数、店铺名、包邮信息、店铺链接、销量信息。
+        包含滚动点击、异常捕获、风控处理、页面返回等逻辑。
+        返回：
+            comment_count (int): 评论数
+            shop_name (str): 店铺名称
+            postage_info (str): 包邮信息
+            shop_url (str): 店铺链接
+            deal_text (str): 销量信息文本
+        """
         comment_count = 0
-        shop_name = ''
-        postage_info = ''
-        shop_url = ''  # 新增用于存储店铺URL
+        shop_name = ""
+        postage_info = ""
+        shop_url = ""
+        deal_text = ""
 
         try:
-            # 先滚动到元素中间，避免被遮挡
+            # 滚动元素至可视区中间，避免被遮挡
             self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
             time.sleep(0.5)
-            '''
-            # 等待遮挡元素消失（如果知道遮挡的class，替换下）
-            try:
-                self.wait.until(EC.invisibility_of_element_located((By.CSS_SELECTOR, 'div.浮动遮挡层的class')))
-            except TimeoutException:
-                pass  # 或打印日志
-            '''
-            # 直接用 JS 点击，绕过遮挡
+
+            # 使用JS点击元素，绕过遮挡问题
             self.driver.execute_script("arguments[0].click();", element)
-        
-            # 获取当前页面 URL
+
+            # 获取当前页面URL，清理后保存为店铺链接
             current_url = self.driver.current_url
             shop_url = self.clean_url(current_url)
+
+            # 风控处理及暂停检测
             self.RiskPause(self.captcha_handler.PDDsliderl())
             self.wait_if_paused()
+
             if self.should_stop():
-                self.logger.info(f"用户选择终止爬虫，提前结束运行。")
-                self.stop()  # 立即停止爬虫
-                return 0 , None, None, None   # 返回 0，表示终止操作
-        
-            # 等待详情页关键元素加载
-            try:
-                self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.F2MXl7Xc')))
-            except Exception:
-                self.logger.warning("[!] 无法加载评论数量元素，跳过")
-                comment_count = 0  # 默认评论数为0
+                self.logger.info("用户选择终止爬虫，提前结束运行。")
+                self.stop()
+                return 0, None, None, None, ""
 
-            try:
-                self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.BAq4Lzv7')))
-            except Exception:
-                self.logger.warning("[!] 无法加载店铺名元素，跳过")
-                shop_name = "无店铺名称"  # 默认店铺名称
+            # 等待详情页关键元素加载，避免页面未完全加载导致找不到元素
+            # 这里用不同选择器分步等待，捕获异常时记录日志并使用默认值
 
+            # 获取销量信息（支持多个xpath尝试）
             try:
-                self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.RbQ7MTuU')))
-            except Exception:
-                self.logger.warning("[!] 无法加载包邮信息元素，跳过")
-                postage_info = "无包邮信息"  # 默认包邮信息
+                for xp in self.XPATH_SALES_PATTERNS:
+                    try:
+                        elem = self.driver.find_element(By.XPATH, xp)
+                        deal_text = elem.text.strip()
+                        if deal_text:
+                            break
+                    except Exception:
+                        continue
+                if not deal_text:
+                    deal_text = "销量信息未找到"
+            except Exception as e:
+                self.logger.warning(f"[!] 获取销量信息失败: {repr(e)}")
+                deal_text = "销量信息异常"
 
-            # 获取评论数（如果没有评论，这一步会失败）
+            self.logger.info(f"获取销量: {deal_text}")
+
+            # 获取评论数
             try:
                 comment_text_element = WebDriverWait(self.driver, 10).until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, 'div.F2MXl7Xc'))
@@ -493,8 +588,11 @@ class PDDScraper(BaseScraper):
                 match = re.search(r'\((\d+)\)', comment_text)
                 if match:
                     comment_count = int(match.group(1))
+                else:
+                    comment_count = 0
             except Exception:
-                comment_count = 0  # 如果没有评论或无法加载评论，设置为 0
+                self.logger.warning("[!] 无法获取评论数，默认设置为0")
+                comment_count = 0
 
             # 获取店铺名称
             try:
@@ -504,25 +602,26 @@ class PDDScraper(BaseScraper):
                 shop_name = shop_name_element.text.strip()
             except Exception as e:
                 self.logger.warning(f"[!] 获取店铺名称失败: {repr(e)}")
-                shop_name = "无店铺名称"  # 设置默认值
+                shop_name = "无店铺名称"
 
-
-            # 获取包邮状况
+            # 获取包邮信息
             try:
                 postage_elements = WebDriverWait(self.driver, 10).until(
                     EC.presence_of_all_elements_located((By.CSS_SELECTOR, 'div.RbQ7MTuU span.KDFIGUNK'))
                 )
                 postage_info = ' '.join([e.text.strip() for e in postage_elements if e.text.strip()])
+                if not postage_info:
+                    postage_info = "无包邮信息"
             except Exception as e:
                 self.logger.warning(f"[!] 获取包邮信息失败: {repr(e)}")
-                postage_info = "无包邮信息"  # 设置默认值
+                postage_info = "无包邮信息"
 
         except Exception as e:
             self.logger.error(f"[!] 获取详情数据失败: {repr(e)}")
             self.save_page_html("error_page.html")
 
-
         finally:
+            # 返回列表页，等待主页面加载
             self.driver.back()
             try:
                 self.wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, 'div.rjNMXsUm._1unt3Js-')))
@@ -530,23 +629,85 @@ class PDDScraper(BaseScraper):
                 time.sleep(1)
             self.human_sleep(1, 2)
 
-        if (
-            comment_count == 0 and
-            shop_name in ["", "无店铺名称"] and
-            postage_info in ["", "无包邮信息"] and
-            shop_url == ''
-        ):
+        # 检测连续多次获取空数据，触发反爬逻辑
+        if (comment_count == 0 and shop_name in ["", "无店铺名称"] and
+            postage_info in ["", "无包邮信息"] and shop_url == ""):
             self.empty_data_count = getattr(self, 'empty_data_count', 0) + 1
             self.logger.warning(f"[!] 获取为空数据 {self.empty_data_count}/3 次")
             if self.empty_data_count >= 3:
                 self.logger.error("[!] 连续 3 次获取为空，程序即将暂停")
-                self.anti_spider_triggered = True  #  设置风控标志位
-                return 0 , None, None, None      #  提前返回特殊值
+                self.anti_spider_triggered = True
+                return 0, None, None, None, ""
         else:
+            # 有效数据则重置计数
+            self.empty_data_count = 0
 
-            self.empty_data_count = 0  # 有效数据则复位
-        
-        return comment_count, shop_name, postage_info, shop_url  # 返回店铺URL
+        return comment_count, shop_name, postage_info, shop_url, deal_text
+
+
+    def get_next_PDD_item(self, clear_after_fetch=True):
+        """
+        返回下一条商品信息: title, img_url, shop_url, deal, price, free_shipping
+        并在日志中打印队列状态
+        """
+        # 初始化队列
+        if not hasattr(self, "_pdd_items_queue"):
+            self._pdd_items_queue = []
+
+            # 首次从 draw 初始化前20条
+            draw_items = self.driver.execute_script(
+                "return window.rawData?.stores?.store?.data?.ssrListData?.list || [];"
+            ) or []
+
+            for item in draw_items:
+                obj = {
+                    "title": item.get("goodsName") or "",
+                    "img_url": item.get("imgUrl") or item.get("hd_url") or "",
+                    "shop_url": "https://mobile.pinduoduo.com/" + (item.get("linkURL") or ""),
+                    "deal": item.get("salesTip") or item.get("sales") or 0,
+                    "price": item.get("priceInfo") or 0,
+                    "free_shipping": any("包邮" in tag.get("text", "") for tag in item.get("tagList", []))
+                }
+                self._pdd_items_queue.append(obj)
+
+            self.logger.info(f"[PDD] 队列初始化完成，draw 获取 {len(draw_items)} 条商品，总队列长度: {len(self._pdd_items_queue)}")
+
+        # 从 fetch/XHR 补充新 items
+        fetch_items = []
+        responses = self.get_pdd_search_responses(self.driver)
+        for search_data in reversed(responses):
+            items = self.parse_pdd_search_response_data(search_data)
+            fetch_items.extend(items)
+
+        if fetch_items:
+            self._pdd_items_queue.extend([
+                {
+                    "title": g.get("goods_name", ""),
+                    "img_url": g.get("hd_thumb_url") or g.get("hd_url") or "",
+                    "shop_url": g.get("link_url", ""),
+                    "deal": g.get("sales_tip") or g.get("sales", 0),
+                    "price": g.get("price_info", 0),
+                    "free_shipping": any("包邮" in tag.get("text", "") for tag in g.get("tag_list", []))
+                                    if isinstance(g.get("tag_list", []), list) else False
+                }
+                for g in fetch_items
+            ])
+            self.logger.info(f"[PDD] fetch 补充 {len(fetch_items)} 条商品，总队列长度: {len(self._pdd_items_queue)}")
+
+            if clear_after_fetch:
+                self.clear_pdd_search_responses(self.driver)
+
+        # 返回队列中的下一条商品
+        if self._pdd_items_queue:
+            g = self._pdd_items_queue.pop(0)
+            if g["shop_url"] and not g["shop_url"].startswith("http"):
+                g["shop_url"] = "https://mobile.pinduoduo.com/" + g["shop_url"].lstrip("/")
+            self.logger.debug(f"[PDD] 返回下一条商品, 队列剩余长度: {len(self._pdd_items_queue)}")
+            return g
+
+        # 队列为空
+        self.logger.debug("[PDD] 队列为空，没有商品可返回")
+        return None
 
     def clear_image_cache(self, subfolder='PDD'):
         """
@@ -568,6 +729,9 @@ class PDDScraper(BaseScraper):
         else:
             self.logger.error(f"[!] 文件夹不存在或不是目录：{folder}")
 
+
+    
+
     def run(self):
         try:
             self.driver.get("https://mobile.pinduoduo.com/")
@@ -576,6 +740,7 @@ class PDDScraper(BaseScraper):
             self.logger.error("登录拼多多失败")
 
         self.wait_for_login()
+        #input("IMPORT")
 
         self.click_fake_search_box()
         self.search()
@@ -605,7 +770,7 @@ if __name__ == "__main__":
     ep = 1 #int(input("结束页码："))
     mi = int(input("最大商品数："))
     show_img = input("是否插入图片 (y/n)：").strip().lower() == 'y'
-
-    spider = PDDScraper(kw, sp, ep, mi, show_img)
+    pierce_span=[100,300]
+    spider = PDDScraper(kw, sp, ep, mi, show_img,pierce_span=pierce_span)
     spider.run()
 

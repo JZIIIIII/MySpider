@@ -63,13 +63,15 @@ from path_utils import static_image_path ,static_hash_path , static_excel_path
 
 
 class TaobaoScraper(BaseScraper):
-    def __init__(self, keyword, start_page, end_page,insert_image=True, max_items=100):
+    def __init__(self, keyword, start_page, end_page,insert_image=True, max_items=100, pierce_span=[0,0]):
         super().__init__(headless=True, proxy=None)  # 调用父类初始化
         self.keyword = keyword
         self.page_start = start_page
         self.page_end = end_page
         self.insert_image = insert_image
         self.max_items = max_items
+        self.pierce_span  = pierce_span
+
         self.wait = WebDriverWait(self.driver, 10)
         self.excel = Workbook()
         self.sheet = self.excel.active
@@ -451,7 +453,26 @@ class TaobaoScraper(BaseScraper):
                     # print(f"[跳过] 已存在的商品: {title}")
                     continue
                 self.hash_set.add(item_hash)
+
+                # ==== 价格区间过滤 ====
+                min_p, max_p = self.pierce_span
+
+                # 防止用户输入反区间 [100,50]
+                if min_p > max_p:
+                    min_p, max_p = max_p, min_p
+
+                # 只有当区间不是 [0,0] 时才进行过滤
+                if not (min_p == 0 and max_p == 0):
+                    try:
+                        price_value = float(price)
+                    except:
+                        continue  # 价格格式不正确，跳过当前商品
+
+                    # 不在闭区间内 → 跳过
+                    if not (min_p <= price_value <= max_p):
+                        continue
                 # ======================
+
                 # 判断图片链接是否有效并下载到本地
                 if not img_url or not isinstance(img_url, str) or not img_url.startswith(('/', '//', 'http')):
                     self.logger.warning(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图")
@@ -575,6 +596,7 @@ if __name__ == "__main__":
     end_page = int(input("终止页码："))
     max_items = int(input("最多抓取商品数量："))
     insert_image = input("是否插入商品图片到 Excel？(y/n)：").strip().lower() == "y"
+    pierce_span=[0,100]
 
-    scraper = TaobaoScraper(keyword, start_page, end_page, insert_image,max_items=max_items)
+    scraper = TaobaoScraper(keyword, start_page, end_page, insert_image,max_items=max_items ,pierce_span=pierce_span)
     scraper.run()
