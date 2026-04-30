@@ -201,6 +201,46 @@ class PDDScraper(BaseScraper):
         """清空缓存，避免重用旧数据。"""
         driver.execute_script("window._pdd_responses = [];")
 
+    def dump_pdd_item(self, g, max_dump=3):
+        """
+        调试用：保存 PDD 原始 item 到 JSON 文件
+        """
+        if not g:
+            return
+
+        import json, os
+        from datetime import datetime
+
+        if not hasattr(self, "_pdd_dump_count"):
+            self._pdd_dump_count = 0
+
+        if self._pdd_dump_count >= max_dump:
+            return
+
+        os.makedirs("debug_dump", exist_ok=True)
+        path = "debug_dump/pdd_raw_items.json"
+
+        record = {
+            "_dump_time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "item": g
+        }
+
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                try:
+                    data = json.load(f)
+                except:
+                    data = []
+        else:
+            data = []
+
+        data.append(record)
+
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+        self._pdd_dump_count += 1
+
     def parse_all_showcases(self, max_items=100, platform='PDD', hash_json=None, max_empty_scrolls=5):
         """
         采集 PDD 商品信息，最多 max_items 条。
@@ -233,6 +273,10 @@ class PDDScraper(BaseScraper):
 
             # 取下一条商品
             g = self.get_next_PDD_item(clear_after_fetch=True)
+
+            #  调试：保存原始 PDD item 到 json（不打 log）
+            #self.dump_pdd_item(g)
+
             queue_len = len(getattr(self, "_pdd_items_queue", []))
             self.logger.info(f"[队列状态] _pdd_items_queue长度: {queue_len}, 已采集: {len(results)}")
 
@@ -253,14 +297,6 @@ class PDDScraper(BaseScraper):
                 continue
             seen_titles.add(title)
 
-            # 哈希去重
-            item_dict = {'title': title, 'price': g.get("price", "")}
-            features_url = g.get("img_url", "") or ""
-            item_hash = self.compute_hash(item_dict, platform, features_url)
-            if item_hash in hash_set:
-                self.logger.info(f"[跳过] 已存在商品: {title}")
-                continue
-            hash_set.add(item_hash)
 
             # ==== 价格区间过滤 ====
             min_p, max_p = self.pierce_span
@@ -281,6 +317,15 @@ class PDDScraper(BaseScraper):
                     self.logger.info(f"[价格过滤] {price_value} 不在区间 [{min_p}, {max_p}] 内，跳过")
                     continue
             # ======================
+
+            # 哈希去重
+            item_dict = {'title': title, 'price': g.get("price", "")}
+            features_url = g.get("img_url", "") or ""
+            item_hash = self.compute_hash(item_dict, platform, features_url)
+            if item_hash in hash_set:
+                self.logger.info(f"[跳过] 已存在商品: {title}")
+                continue
+            hash_set.add(item_hash)
 
             # 下载图片
             img_url = g.get("img_url", "")
@@ -677,6 +722,11 @@ class PDDScraper(BaseScraper):
         responses = self.get_pdd_search_responses(self.driver)
         for search_data in reversed(responses):
             items = self.parse_pdd_search_response_data(search_data)
+            '''
+            os.makedirs("debug_dump", exist_ok=True)
+            with open("debug_dump/pdd_parsed_items.json", "w", encoding="utf-8") as f:
+                json.dump(items[:3], f, ensure_ascii=False, indent=2)
+            '''
             fetch_items.extend(items)
 
         if fetch_items:

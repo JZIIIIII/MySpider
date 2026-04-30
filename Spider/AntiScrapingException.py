@@ -169,4 +169,76 @@ class CaptchaHandler:
             self.logger.error(f"检测验证码时发生异常: {e}")
         return False
 
+    def A1688Captcha(self, min_seconds=2, max_seconds=3, max_iframes=6):
+        """
+        检测当前页面是否出现1688风控滑块验证码组件。
+        如果检测到滑块，则返回 True，否则返回 False。
+        并使用 logger 记录检测结果。
+        优化为快速检索策略。
+        """
+        try:
+            # 优化：直接检查主页面是否有风控滑块（旧版）
+            if self.driver.find_elements(By.CSS_SELECTOR, ".captcha"):
+                self.logger.warning("检测到1688风控滑块验证码（主页面 - 旧版）")
+                return True
+
+            # 新版风控：检查是否有滑块按钮（#scratch-captcha-btn）
+            if self.driver.find_elements(By.CSS_SELECTOR, "#scratch-captcha-btn"):
+                self.logger.warning("检测到1688风控滑块验证码（主页面 - 新版）")
+                return True
+
+            # 新版风控：检查是否有风控提示文字（如“请按照说明拖动滑块”）
+            if self.driver.find_elements(By.XPATH, "//div[contains(text(), '请按照说明拖动滑块')]"):
+                self.logger.warning("检测到1688风控提示文字（主页面 - 新版）")
+                return True
+
+            # 检查加载状态（如果存在加载动画）
+            if self.driver.find_elements(By.CLASS_NAME, "scratch-captcha-loading"):
+                self.logger.warning("检测到1688风控加载状态（主页面）")
+                return True
+
+            # 优化：减少不必要的 iframe 遍历次数
+            iframes = self.driver.find_elements(By.TAG_NAME, "iframe")
+            for i, iframe in enumerate(iframes[:max_iframes]):
+                try:
+                    self.driver.switch_to.frame(iframe)
+
+                    # 快速检查 iframe 中是否包含风控滑块（旧版风控）
+                    if self.driver.find_elements(By.XPATH, "//div[contains(@class, 'captcha')]"):
+                        self.logger.debug(f"检测到1688风控滑块验证码（iframe 第 {i+1} 个 - 旧版）")
+                        self.driver.switch_to.default_content()
+                        return True
+
+                    # 检查 iframe 中是否包含新版风控滑块按钮（#scratch-captcha-btn）
+                    if self.driver.find_elements(By.CSS_SELECTOR, "#scratch-captcha-btn"):
+                        self.logger.debug(f"检测到1688风控滑块验证码（iframe 第 {i+1} 个 - 新版）")
+                        self.driver.switch_to.default_content()
+                        return True
+
+                    # 检查 iframe 中是否包含风控提示文字
+                    if self.driver.find_elements(By.XPATH, "//div[contains(text(), '请按照说明拖动滑块')]"):
+                        self.logger.debug(f"检测到1688风控提示文字（iframe 第 {i+1} 个 - 新版）")
+                        self.driver.switch_to.default_content()
+                        return True
+
+                    # 检查 iframe 中是否有加载状态（加载动画）
+                    if self.driver.find_elements(By.CLASS_NAME, "scratch-captcha-loading"):
+                        self.logger.debug(f"检测到1688风控加载状态（iframe 第 {i+1} 个）")
+                        self.driver.switch_to.default_content()
+                        return True
+
+                except Exception as e:
+                    self.logger.debug(f"切换到第 {i+1} 个 iframe 失败: {e}")
+                finally:
+                    self.driver.switch_to.default_content()
+
+            # 未检测到风控滑块
+            self.logger.info("未检测到1688风控滑块验证码")
+            return False
+
+        except Exception as e:
+            self.logger.error(f"风控检测异常: {e}")
+            self.driver.switch_to.default_content()
+            return False
+
     

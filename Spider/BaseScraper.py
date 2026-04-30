@@ -6,7 +6,10 @@ import time
 import os
 import sys
 import logging
+import re
 import json
+import html
+from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -54,6 +57,14 @@ class BaseScraper(SpiderEventsController):
         except Exception as e:
             self.logger.warning(f"保存页面 HTML 时出错: {e}")
 
+    def remove_html_tags(self,text):
+        """去除字符串中的HTML标签"""
+        clean_text = re.sub(r'<.*?>', '', text)  # 使用正则去除标签
+        return clean_text
+
+    def decode_html_entities(self,text):
+        """解码HTML实体字符"""
+        return html.unescape(text)
 
     ##滑动窗口
     def scroll_step_down(self, base_step=300):
@@ -206,31 +217,32 @@ class BaseScraper(SpiderEventsController):
             driver = uc.Chrome(
                 options=options,
                 driver_executable_path=chromedriver_path,
-                use_subprocess=True
+                use_subprocess=True,
+                enable_cdp_events=True
             )
             self.logger.info("ChromeDriver 启动成功")
         except Exception as e:
             self.logger.warning("Chrome 启动失败：%s", e)
             return None
 
-        def interceptor(request):
+        # 设置默认的拦截器
+        self.set_default_interceptors(driver)
+        return driver
+
+    def set_default_interceptors(self, driver):
+        """ 默认拦截器设置（可以被子类覆盖） """
+        def default_request_interceptor(request):
+            # 例如，可以在请求中设置一些默认的请求头
             pass
 
-        def response_interceptor(request, response):
-            if 'react_psnl_verification_' in request.path:
-                body = response.body.decode('utf-8', errors='ignore')
-                modified = body.replace('navigator.webdriver', 'navigator.qwerasdfzxcv')
-                response.body = modified.encode('utf-8')
-
-        try:
-            driver.request_interceptor = interceptor
-            driver.response_interceptor = response_interceptor
-            self.logger.info("请求/响应拦截器设置成功")
-        except Exception as e:
-            self.logger.warning("设置拦截器失败：%s", e)
-
-        time.sleep(1)
-        return driver
+        def default_response_interceptor(request, response):
+            # 例如，处理一些响应内容
+            pass
+        
+        # 绑定拦截器
+        driver.request_interceptor = default_request_interceptor
+        driver.response_interceptor = default_response_interceptor
+        self.logger.info("默认请求/响应拦截器已设置")
         
 
         

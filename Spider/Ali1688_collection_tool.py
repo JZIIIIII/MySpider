@@ -147,19 +147,29 @@ class Ali_1688Scraper(BaseScraper):
         main_window = self.driver.current_window_handle
 
         try:
-            # 提取商品ID，防止href匹配失败
+            # 1. 提取商品ID，防止href匹配失败
             item_id_match = re.search(r'offerId=(\d+)', url)
             if not item_id_match:
-                self.logger.warning("无法提取 offerId，跳过")
-                return location, comment_count
+                # 如果没有找到 offerId，再尝试从 URL 中提取 a 参数
+                self.logger.warning("无法提取 offerId，尝试从 URL 中提取 a 参数")
+                item_id_match = re.search(r'a=(\d+)', url)
+                if not item_id_match:
+                    self.logger.warning("无法提取商品 ID，跳过")
+                    return location, comment_count
             item_id = item_id_match.group(1)
 
-            # 🔹新版页面的详情链接 (detail.m.1688.com)
-            title_xpath = f'//a[contains(@href, "offerId={item_id}") and contains(@href, "detail.m.1688.com")]'
+            # 2. 构建宽松的 XPath 查找商品链接
+            # 1. 商品详情页链接：包含 offerId 和 detail.m.1688.com
+            # 2. 商品列表页链接：包含 https://dj.1688.com/ 和 a={item_id}
+            title_xpath = f'//a[(contains(@href, "offerId={item_id}") and contains(@href, "detail.m.1688.com")) or (contains(@href, "https://dj.1688.com/") and contains(@href, "a={item_id}"))]'
+
+            # 等待元素可点击
             title_element = self.wait.until(EC.element_to_be_clickable((By.XPATH, title_xpath)))
 
+            # 获取 href 和日志信息
             href = title_element.get_attribute('href')
-            # self.logger.info(f"即将点击链接：{href}")
+            self.logger.info(f"即将点击链接：{href}")
+            self.human_sleep(1, 2)
             #print(f"即将点击链接：{href}")
 
             # 获取尺寸并设置更合适的偏移
@@ -168,6 +178,7 @@ class Ali_1688Scraper(BaseScraper):
             height = size['height']
             offset_x = int(width * 0.1)
             offset_y = int(height * 0.3)
+
 
             # 执行偏移点击
             actions = ActionChains(self.driver)
@@ -178,6 +189,8 @@ class Ali_1688Scraper(BaseScraper):
                    .perform()
 
             self.RiskPause(self.captcha_handler.AliCaptcha())
+            self.RiskPause(self.captcha_handler.A1688Captcha())
+
             # 等待新标签页打开，最多等待5秒
             for _ in range(10):
                 handles = self.driver.window_handles
@@ -199,7 +212,10 @@ class Ali_1688Scraper(BaseScraper):
 
             new_tab = new_tabs[-1]
             self.driver.switch_to.window(new_tab)
+
             self.RiskPause(self.captcha_handler.AliCaptcha())
+            self.RiskPause(self.captcha_handler.A1688Captcha())
+
             self.wait_if_paused()
             if self.should_stop():
                 self.logger.info("用户主动终止爬虫，跳过当前评论数解析")
@@ -208,6 +224,7 @@ class Ali_1688Scraper(BaseScraper):
 
             self.human_sleep(2, 3)
 
+            '''
             try:
                 trade_info = self.driver.find_element(By.CSS_SELECTOR, "div.trade-info.v-flex")
                 texts = self.driver.execute_script("""
@@ -233,6 +250,7 @@ class Ali_1688Scraper(BaseScraper):
 
             # 后续用 combined_text 即可
             self.logger.warning(f"拼接结果:{combined_text}")
+            '''
 
             # 获取评论数
             try:
@@ -249,9 +267,28 @@ class Ali_1688Scraper(BaseScraper):
             except Exception as e:
                 self.logger.warning(f"获取发货地失败，错误信息：{e}")
                 location = ""
+            # 获取销量
+            try:
+                sale_elem = self.driver.find_element(
+                    By.XPATH,
+                    '//span[text()="已售"]/following-sibling::span[1]'
+                )
+                sale_text = sale_elem.text.strip()
+
+                # 统一转成数字（10万+ / 1.2万+ / 1234）
+                if '万' in sale_text:
+                    sales = int(float(sale_text.replace('万+', '').replace('万', '')) * 10000)
+                else:
+                    sales = int(sale_text.replace('+', ''))
+
+            except Exception as e:
+                self.logger.warning(f"获取销量失败，错误信息：{e}")
+                sales = 0
 
         except Exception as e:
             self.logger.warning(f"标签页打开失败，错误信息：{e}")
+
+
 
         finally:
             # 关闭新标签页，切换回主窗口
@@ -267,7 +304,7 @@ class Ali_1688Scraper(BaseScraper):
                 self.logger.warning(f"关闭标签页或切换主窗口失败，错误信息：{e}")
                 self.save_page_html("error_page.html")
 
-        return combined_text,location, comment_count
+        return sales,location, comment_count
 
     def download_image(self, url, index):
         try:
@@ -333,11 +370,11 @@ class Ali_1688Scraper(BaseScraper):
 
     def parse_page(self, page_number, platform='Ali1688',hash_json=None):
         # 获取当前页面所有商品元素（Selenium WebElement）
-        items_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a.search-offer-item')
+        items_elements = self.driver.find_elements(By.CSS_SELECTOR, 'a.search-offer-item, a.ocms-fusion-1688-pc-pc-ad-common-offer-2024')
         # 用 pyquery 解析页面HTML，拿到所有商品节点
         html = self.driver.page_source
         doc = pq(html)
-        items_data = list(doc('a.search-offer-item').items())
+        items_data = list(doc('a.search-offer-item, a.ocms-fusion-1688-pc-pc-ad-common-offer-2024').items())
         # 载入历史哈希
         if hash_json:
             hash_json = static_hash_path(hash_json)
@@ -369,9 +406,7 @@ class Ali_1688Scraper(BaseScraper):
                     self.save_hash_set(self.hash_set, hash_json)  # 使用类成员变量 self.hash_set  
                 return False
 
-            try: 
-
-
+            try:
                 '''
                 if self.anti_spider_triggered == True:
                     print(f"触发强制风控账号冻结 应前往1688解封")
@@ -408,61 +443,43 @@ class Ali_1688Scraper(BaseScraper):
                     img_url = "https:" + img_url
                 elif img_url.startswith("/"):
                     img_url = "https://cbu01.alicdn.com/" + img_url
+                #print(img_url)
 
-
-
-                # 解析其他字段
+                # 解析商品标题
                 title = data.find('.offer-title-row .title-text div').text()
+                #print(title)
 
+                # 解析商品价格
                 price_container = data.find('.price-item')
                 if price_container:
-                    # 用集合记录是否遇到 '¥'
-                    seen_yuan = set()  # 哈希表来记录是否遇到 '¥'
+                    # 获取 "¥" 符号后面的价格部分
                     price_parts = []
-    
-                    for child in price_container.children():
-                        part = pq(child).text().strip()
-                        if part:  # 排除空白内容
-                            # 如果遇到 '¥' 符号并且它已经出现过，停止继续添加
-                            if '¥' in part:
-                                if '¥' in seen_yuan:
-                                    break  # 如果 '¥' 已经出现过一次，停止处理
-                                seen_yuan.add('¥')  # 记录第一次遇到 '¥'
-                            price_parts.append(part)
 
-                    # 合并前两个价格部分
-                    price_text = ''.join(price_parts[:2]).replace('¥', '').strip()
+                    # 提取所有的文本部分
+                    for part in price_container.children():
+                        price_parts.append(pq(part).text().strip())
 
-                    # 处理价格转换并控制小数点后两位
+                    # 筛选掉重复的 "¥" 符号和多余的部分
+                    # 假设 price_parts 中始终包含一个 "¥" 和一个整数、小数
+                    # 只保留数字部分，拼接成一个价格字符串
+                    price_text = ''.join(price_parts[1:3]).strip()  # 取出第二部分和第三部分（即 0 和 .14）
+
+                    # 处理价格转换并控制为两位小数
                     try:
                         price = round(float(price_text), 2)
                     except ValueError:
                         price = 0.0
                 else:
                     price = 0.0
-                '''
-                try:
-                    desc_text_elem = data.find('.col-desc_after .offer-desc-item .desc-text')
-                    deal_text = desc_text_elem.text().strip() if desc_text_elem else "0"
+                #print(price)
+                    
 
-                    if deal_text:
-                        match = re.search(r'([\d\.]+)(万)?', deal_text)
-                        if match:
-                            number_part = match.group(1)
-                            wan_unit = match.group(2)
-                            deal = int(float(number_part) * (10000 if wan_unit else 1))
-                        else:
-                            deal = 0
-                    else:
-                        deal = 0
-                except Exception:
-                    deal = 0
-                '''
-
+                # 获取包邮信息
                 desc_text_elems = data.find('.col-desc').find('.desc-text')
                 texts = [elem.text().strip() for elem in desc_text_elems.items()]
                 post = "包邮" if any("包邮" in t for t in texts) else "/"
 
+                # 获取店铺名称和链接
                 try:
                     shop_elem = data.find('.col-left a.offer-desc-item')
                     shop = shop_elem.find('.desc-text').text().strip() if shop_elem else ''
@@ -472,12 +489,15 @@ class Ali_1688Scraper(BaseScraper):
                 except Exception:
                     shop = ''
                     shop_url = ''
+                #print(shop, shop_url)
 
+                # 获取商品链接
                 item_url = data.attr('href')
                 if item_url.startswith("//"):
                     item_url = "https:" + item_url
                 elif item_url.startswith("/"):
                     item_url = "https://detail.1688.com" + item_url
+                #print(item_url)
 
                 # ==== 新增哈希去重 ====
                 item_dict = {'title': title, 'price': price}
@@ -670,10 +690,10 @@ class Ali_1688Scraper(BaseScraper):
 
 
 if __name__ == "__main__":
-    keyword = "山东黄桃"#input("输入搜索关键词：")
+    keyword = "长方形纸箱"#input("输入搜索关键词：")
     start_page =1 # int(input("起始页码："))
     end_page = 2 #int(input("终止页码："))
-    max_items = 5 #int(input("最多抓取商品数量："))
+    max_items = 10 #int(input("最多抓取商品数量："))
     insert_image = input("是否插入商品图片到 Excel？(y/n)：").strip().lower() == "y"
 
     scraper = Ali_1688Scraper(keyword, start_page, end_page,insert_image, max_items=max_items)
