@@ -29,6 +29,7 @@
         'Img_URL'     ：图片链接
         'Img'         ；图片
 '''
+from math import prod
 import time
 import random
 import json
@@ -71,6 +72,7 @@ class TaobaoScraper(BaseScraper):
         self.insert_image = insert_image
         self.max_items = max_items
         self.pierce_span  = pierce_span
+        self.all_warelists = []
 
         self.wait = WebDriverWait(self.driver, 10)
         self.excel = Workbook()
@@ -92,7 +94,64 @@ class TaobaoScraper(BaseScraper):
         for i, header in enumerate(headers, 1):
             self.sheet.cell(row=1, column=i, value=header)
 
+    def save_to_excel(self, results, filename='results.xlsx'):
+        # 创建新的 Excel 工作簿和工作表
+        wb = Workbook()
+        ws = wb.active
+        ws.title = '商品信息'
 
+        # 初始化表头
+        headers = ['Num', 'Title', 'Price', 'Deal', 'Location', 'Shop', 'IsPostFree',
+                   'Title_URL', 'Shop_URL', 'Img_URL', 'Num_Com', 'Image']
+
+        # 写入表头
+        for i, header in enumerate(headers, 1):
+            ws.cell(row=1, column=i, value=header)
+
+        # 设置图片插入列宽
+        img_col_letter = 'L'  # 图片插入列是第L列
+        ws.column_dimensions[img_col_letter].width = 15
+
+        # 填充商品数据
+        for i, item in enumerate(results, start=2):  # 从第二行开始插入数据
+            # 填充商品信息
+            ws.cell(row=i, column=1, value=i - 1)  # 商品编号（Num）
+            ws.cell(row=i, column=2, value=item['title'])  # 商品标题（Title）
+            ws.cell(row=i, column=3, value=item['price'])  # 商品价格（Price）
+            ws.cell(row=i, column=4, value=item['deal_num'])  # 成交量（Deal）
+            ws.cell(row=i, column=5, value=item['location'])  # 商品所在地（Location）
+            ws.cell(row=i, column=6, value=item['shop_name'])  # 店铺名称（Shop）
+            ws.cell(row=i, column=7, value=item['freeFreight'])  # 是否包邮（IsPostFree）
+            ws.cell(row=i, column=8, value=item['item_url'])  # 商品链接（Title_URL）
+            ws.cell(row=i, column=9, value=item['shop_url'])  # 店铺链接（Shop_URL）
+            ws.cell(row=i, column=10, value=item['img_url'])  # 图片链接（Img_URL）
+            ws.cell(row=i, column=11, value=item['comment'])  # 评论数量（Num_Com）
+
+            # 插入商品图片（Image）
+            if self.insert_image:
+                img_path = item.get('img_path')  # 商品图片路径
+                if img_path and os.path.exists(img_path):
+                    try:
+                        # 使用 Pillow 打开图片并重新编码为 JPEG（修复部分 JPEG 插入失败问题）
+                        with Image.open(img_path) as img:
+                            rgb_img = img.convert("RGB")
+                            rgb_img.save(img_path, format='JPEG')  # 覆盖原图
+
+                        # 插入图片到 Excel
+                        excel_img = ExcelImage(img_path)
+                        excel_img.width = 80
+                        excel_img.height = 80
+                        ws.row_dimensions[i].height = 60  # 设置行高
+                        excel_img.anchor = f'{img_col_letter}{i}'  # 图片插入到指定单元格
+                        ws.add_image(excel_img)
+                    except Exception as e:
+                        self.logger.error(f"[!] 图片插入失败: {img_path} | 错误: {e}")
+                else:
+                    self.logger.warning(f"[!] 图片路径无效或文件不存在: {img_path}")
+
+        # 保存 Excel 文件
+        wb.save(filename)
+        self.logger.info(f"[√] 数据已保存到 Excel：{filename}")
 
 
     def save_cookies(self, path="taobao_cookies.json"):
@@ -138,7 +197,15 @@ class TaobaoScraper(BaseScraper):
                 search_btn = self.wait.until(EC.element_to_be_clickable((By.CLASS_NAME, 'search-btn')))
             except Exception as e2:
                 self.logger.warning(f"w方法也失败: {e2}")
-
+                try:
+                    # 新版页面方法
+                    search_box = self.wait.until(EC.element_to_be_clickable((By.ID, 'q')))
+                    search_btn = self.wait.until(EC.element_to_be_clickable((By.ID, 'button')))
+                except Exception as e3:
+                    self.logger.error(f"search？搜索框定位也失败: {e3}")
+                    self.save_page_html("error_page.html")
+                    raise Exception("搜索框和按钮定位失败，搜索终止")
+                s
                 raise Exception("搜索框和按钮定位失败，搜索终止")
 
                 self.save_page_html("error_page.html")
@@ -155,6 +222,9 @@ class TaobaoScraper(BaseScraper):
 
     def go_to_page(self, page_number):
         try:
+            # === 风控检查与等待控制 ===
+            self.RiskPause(self.captcha_handler.Taosliderl())
+            self.RiskPause(self.captcha_handler.TaoCheckRisk())
             # 等待跳页输入框出现
             page_input = self.wait.until(EC.presence_of_element_located(
                 (By.CSS_SELECTOR, 'span.next-input input')))
@@ -349,6 +419,26 @@ class TaobaoScraper(BaseScraper):
             self.logger.error(f"图片下载异常: {e} | URL: {url}")
             return None
 
+    def download_all_images(self):
+        """
+        批量下载 self.all_warelists 中的图片并保存到本地。
+        并在每个商品字典中添加 'image_path' 字段。
+        """
+        for index, product_info in enumerate(self.all_warelists):
+            img_url = product_info.get('img_url', 'N/A')
+
+            if img_url != 'N/A':  # 如果图片链接有效
+                image_path = self.download_image(img_url, index + 1)  # 下载并保存图片
+                if image_path:
+                    product_info['img_path'] = image_path  # 更新商品字典，保存图片的本地路径
+                else:
+                    product_info['img_path'] = None  # 下载失败则设为 None
+            else:
+                product_info['img_path'] = None  # 如果没有图片链接，也设为 None
+
+        self.logger.info(f"已成功下载并保存 {len(self.all_warelists)} 张商品图片")
+
+
     def clean_image_folder(self):
         folder = "images/TaoBao"  # 直接使用硬编码的路径
         if os.path.exists(folder):
@@ -360,169 +450,238 @@ class TaobaoScraper(BaseScraper):
                     shutil.rmtree(file_path)  # 删除子文件夹
 
 
-    def parse_page(self, page_number, platform='TaoBao',hash_json=None):
-        html = self.driver.page_source
-        doc = pq(html)
-        items = doc('div.content--CUnfXXxv > div > div').items()
-        #content--CUnfXXxv
-        # 载入历史哈希
-        if hash_json:
-            hash_json = static_hash_path(hash_json)
-            hash_set = self.load_hash_set(hash_json)
-            self.hash_set.update(hash_set)  # 合并新的哈希池
-        else:
-            hash_set  = self.hash_set
-        slide_counter = 0  # 每页开始前初始化下滑计数器
+    def JSlistener(self, driver):
 
-        for item in items:
+        script = """
+        (function() {
 
-            # 如果暂停，则等待恢复
-            self.wait_if_paused()
+            // =========================
+            // 防重复注入
+            // =========================
+            if (window.__TB_JSONP_FIXED__) return;
+            window.__TB_JSONP_FIXED__ = true;
 
-            # 检查是否被强制终止
-            if self.should_stop():
-                self.logger.info("检测到提前终止命令，保存已抓取内容并退出 parse_page。")
-                if hash_json:
-                    self.save_hash_set(self.hash_set, hash_json)  
-                return False
+            // =========================
+            // 内存桥（替代 localStorage）
+            // =========================
+            window.__TB_BRIDGE__ = window.__TB_BRIDGE__ || [];
 
-            try:
-                if self.count - 2 >= self.max_items:
-                    if hash_json:
-                        self.save_hash_set(self.hash_set, hash_json)  
-                    return False
+            function push(data, url) {
+                window.__TB_BRIDGE__.push({
+                    t: Date.now(),
+                    url: url,
+                    data: data
+                });
+            }
 
-                if item.find('.title--RoseSo8H').text() or item.find('.headTitleText--hxVemljn').text():
-                    continue
+            // =========================
+            // 核心：hook callback
+            // =========================
+            function hook(name, url) {
 
-                self.RiskPause(self.captcha_handler.Taosliderl())
+                if (!name) return;
 
-                # 获取图片标签
-                img_tag = item.find('.mainPicAdaptWrapper--V_ayd2hD img')
-                if not img_tag:
-                    img_tag = item.find('.imageSwitch--fJ9SrtEb img')
-                if not img_tag:
-                    img_tag = item.find('img')
+                const old = window[name];
 
-                # 获取图片 URL
-                img_url = (
-                    img_tag.attr('src') or img_tag.attr('data-lazy-img') or
-                    img_tag.attr('data-src') or img_tag.attr('src2') or
-                    img_tag.attr('data-ks-lazyload') or img_tag.attr('data-lazyload') or ""
-                ).strip()
-                if img_url.startswith("//"):
-                    img_url = "https:" + img_url
-                elif img_url.startswith("/"):
-                    img_url = "https://img.alicdn.com" + img_url
+                if (old && old.__hooked__) return;
 
-                title = item.find('.title--ASSt27UY').text()
-                price_text = item.find('.innerPriceWrapper--aAJhHXD4').text().replace('\n', '')
-                try:
-                    price = float(price_text)
-                except ValueError:
-                    price = 0.0
+                window[name] = function(data) {
 
-                deal = ''
-                location = item.find('.procity--wlcT2xH9 span').text()
-                shop = item.find('.shopNameText--DmtlsDKm').text()
-                post = "包邮" if "包邮" in item.find('.subIconWrapper--Vl8zAdQn').text() else "/"
+                    push(data, url);
 
-                # ====== 修改部分：获取 item_id 和 item_url ======
-                a_tag = item.find('.doubleCardWrapperAdapt--mEcC7olq')
-                if a_tag:
-                    item_id = a_tag.attr('data-spm-act-id')
-                    item_url = a_tag.attr('href') or ''
-                    self.logger.info(f"id == {item_id}")
-                else:
-                    self.logger.info("未找到目标元素")
-                    item_id = None
-                    item_url = ''
+                    return typeof old === 'function'
+                        ? old.apply(this, arguments)
+                        : undefined;
+                };
 
-                # URL 补全
-                if item_url.startswith("//"):
-                    item_url = "https:" + item_url
-                elif item_url.startswith("/"):
-                    item_url = "https://item.taobao.com" + item_url
+                window[name].__hooked__ = true;
+            }
 
-                shop_url = item.find('.TextAndPic--grkZAtsC a').attr('href')
-                if shop_url.startswith("//"):
-                    shop_url = "https:" + shop_url
-                elif shop_url.startswith("/"):
-                    shop_url = "https://click.simba.taobao.com" + shop_url
+            // =========================
+            // 关键：拦截 script 插入
+            // =========================
+            const origAppend = Element.prototype.appendChild;
 
-                # ==== 哈希去重 ====
-                item_dict = {'title': title, 'price': price}
-                features_url = shop_url or ''  # 用图片链接代替特征链接
+            Element.prototype.appendChild = function(el) {
 
-                item_hash = self.compute_hash(item_dict, platform, features_url)
-                if item_hash in hash_set:
-                    # print(f"[跳过] 已存在的商品: {title}")
-                    continue
-                self.hash_set.add(item_hash)
+                try {
 
-                # ==== 价格区间过滤 ====
-                min_p, max_p = self.pierce_span
+                    if (el && el.tagName === 'SCRIPT' && el.src) {
 
-                # 防止用户输入反区间 [100,50]
-                if min_p > max_p:
-                    min_p, max_p = max_p, min_p
+                        const m = el.src.match(/[?&]callback=([^&]+)/);
 
-                # 只有当区间不是 [0,0] 时才进行过滤
-                if not (min_p == 0 and max_p == 0):
-                    try:
-                        price_value = float(price)
-                    except:
-                        continue  # 价格格式不正确，跳过当前商品
+                        if (m) {
+                            const cb = decodeURIComponent(m[1]);
 
-                    # 不在闭区间内 → 跳过
-                    if not (min_p <= price_value <= max_p):
-                        continue
-                # ======================
+                            // ⚠️ 关键：每次都 hook（不依赖旧状态）
+                            hook(cb, el.src);
+                        }
+                    }
 
-                # 判断图片链接是否有效并下载到本地
-                if not img_url or not isinstance(img_url, str) or not img_url.startswith(('/', '//', 'http')):
-                    self.logger.warning(f"[警告] 第 {self.count - 1} 个商品图片 URL 无效，跳过插图")
-                    self.logger.warning("商品 HTML 片段：")
-                    #print(item.outer_html())
-                    image_path = None
-                else:
-                    image_path = self.download_image(img_url, self.count - 1) if self.insert_image else None
-                if item_id:
-                    deal, num_com = self.get_comment_count(item_id)
-                else:
-                    deal, num_com = '', 0
+                } catch (e) {}
 
-                # 之后保存商品信息
-                self.save_product_to_excel(
-                    row=self.count,
-                    title=title,
-                    price=price,
-                    deal=deal,
-                    location=location,
-                    shop=shop,
-                    post=post,
-                    item_url=item_url,
-                    shop_url=shop_url,
-                    img_url=img_url,
-                    num_com=num_com,
-                    image_path=image_path
-                )
+                return origAppend.call(this, el);
+            };
 
-                self.count += 1
-                slide_counter += 1
-                if slide_counter % 6 == 0:
-                    self.scroll_step_down()
+        })();
+        """
+
+        driver.execute_script(script)
+
+
+
+    def parse_page(self, page_number, platform='TaoBao', hash_json=None):
+        count_number = len(self.all_warelists)
+        #暂停检测
+        self.wait_if_paused()
+        #终止检测
+        if self.should_stop():
+            self.logger.info("检测到终止命令")
+            return 'finish'  # 返回 'finsih' 表示抓取终止
+        try:
+            # 1. 只保证 hook 存在（不重复注入也没关系）
+            self.JSlistener(self.driver)
+
+            # 2. 只清内存桥（关键）
+            self.driver.execute_script("""
+                window.__TB_BRIDGE__ = [];
+            """)
+
+            self.human_sleep(1, 2)
+
+            # 3. 跳页
+            if page_number == self.page_start:
+                self.go_to_page(page_number+1)
                 self.human_sleep(1, 2)
+                self.driver.execute_script("""
+                    window.__TB_BRIDGE__ = [];
+                """)
+                self.human_sleep(1, 2)
+                self.go_to_page(page_number)
+            else:
+                self.go_to_page(page_number)
 
-            except Exception as e:
-                self.logger.warning(f"[!] 解析商品异常: {e}")
-                continue
+            self.human_sleep(1, 2)
 
-        # 保存哈希集，方便下次增量爬取
-        if hash_json:
-            self.save_hash_set(self.hash_set, hash_json)  # 使用类成员变量 self.hash_set
+            self.multi_scroll_up_down(0, 8, 0, 600)
 
-        return True
+            self.human_sleep(0.5, 1)
+
+            # 4. 取数据
+            saved_data = self.driver.execute_script("""
+                const d = window.__TB_BRIDGE__ || [];
+                window.__TB_BRIDGE__ = [];
+                return d;
+            """)
+
+            #print(data)
+            #print(f"第 {page_number} 页数据条数: {len(data)}")
+            #with open("tb_search_data.json", "w", encoding="utf-8") as f:
+            #  json.dump(saved_data, f, ensure_ascii=False, indent=4)
+
+                        # 正向遍历 saved_data 列表
+            for item in saved_data:
+                if isinstance(item, dict) and isinstance(item.get("data"), dict):
+                    data = item["data"]
+                    if ".recommend" not in data.get("api", ""):
+                        continue
+                    target_data = data.get("data")
+                    if isinstance(target_data, dict) and "itemsArray" in target_data:
+                        itemsArray = target_data.get("itemsArray", [])
+
+                        for product in itemsArray:
+                            if not (product.get("title") and product.get("price")):
+                                continue
+                            product_info = {
+                                'title': product.get('title', 'N/A'),
+                                'price': product.get('price', 'N/A'),
+                                'deal_num': product.get('realSales', 'N/A'),
+                                'location': product.get('procity', 'N/A'),
+                                'shop_name': product.get('nick', 'N/A'),
+                                'item_url': product.get('auctionURL', 'N/A'),
+                                'shop_url': (product.get('shopInfo') or {}).get('url', 'N/A'),
+                                'comment': "",
+                                'img_url': product.get('pic_path', 'N/A'),
+                                'freeFreight': "包邮" if any(
+                                    i.get("text") == "包邮"
+                                    for i in (product.get("icons") or [])
+                                ) else ""
+                            }
+                            # title 清洗
+                            title = product_info['title']
+                            title = self.remove_html_tags(title)
+                            title = self.decode_html_entities(title)
+                            product_info['title'] = title
+                            # URL 补全
+                            item_url = product_info['item_url']
+                            if isinstance(item_url, str) and item_url.startswith('//'):
+                                item_url = 'https:' + item_url
+                            product_info['item_url'] = item_url
+
+                            shop_url = product_info['shop_url']
+                            if isinstance(shop_url, str) and shop_url.startswith('//'):
+                                shop_url = 'https:' + shop_url
+                            product_info['shop_url'] = shop_url
+
+                            img_url = product_info['img_url']
+                            if isinstance(img_url, str) and img_url.startswith('//'):
+                                img_url = 'https:' + img_url
+                            product_info['img_url'] = img_url
+                            # ==== 价格过滤 ==== 
+                            min_p, max_p = self.pierce_span
+
+                            # 防止用户输入反区间 [100, 50]
+                            if min_p > max_p:
+                                min_p, max_p = max_p, min_p
+
+                            # 只有当区间不是 [0,0] 时才进行过滤
+                            if not (min_p == 0 and max_p == 0):
+                                try:
+                                    # 获取商品价格（从 `product_info['price']` 获取）
+                                    price_value = float(product_info['price']) if product_info['price'] != 'N/A' else 0
+                                except:
+                                    self.logger.warning(f"无法解析价格 {product_info['price']}")
+                                    continue  # 无法解析价格 → 跳过
+
+                                # 不在闭区间 → 跳过该商品
+                                if not (min_p <= price_value <= max_p):
+                                    self.logger.info(f"[价格过滤] {price_value} 不在区间 [{min_p}, {max_p}] 内，跳过")
+                                    continue
+
+                            # ==== 哈希去重 ====
+                            # 使用 compute_hash 方法生成商品的哈希值
+                            item_dict = {'title': product_info['title'], 'price': product_info['price']}
+                            features_url = product_info['item_url']
+                            product_hash = self.compute_hash(item_dict, 'JD', features_url)
+
+                            # 如果商品哈希值已经存在，跳过
+                            if product_hash in self.hash_set:
+                                self.logger.info(f"[跳过] 已存在商品: {product_info['title']}")
+                                continue
+
+                            # 添加哈希值到集合
+                            self.hash_set.add(product_hash)
+
+                            # 将商品信息添加到当前页商品列表
+                            self.all_warelists.append(product_info)
+                            count_number += 1
+                            self.count += 1
+                            self.logger.info(f"提取到商品数量: {count_number}")
+
+                            # 如果已经抓取到最大数量的商品，停止处理
+                            if count_number >= self.max_items:
+                                self.logger.info(f"已抓取 {self.max_items} 条商品数据，停止抓取此页数据...")
+                                return 'max_reached'  # 返回 'max_reached' 表示达到最大数量
+
+
+            return 'continue'  # 返回 'continue' 表示数据抓取成功并继续抓取下一页
+
+
+        except Exception as e:
+            # 记录详细的错误信息
+            self.logger.error(f"提取商品信息失败: 第{page_number}页, 错误: {str(e)}")
+            return 'error'  # 返回 'error' 表示抓取失败，外层循环可以决定是否继续
+
 
     def turn_page(self, page_number):
         try:
@@ -544,57 +703,72 @@ class TaobaoScraper(BaseScraper):
 
 
     def run(self):
-        self.driver.get("https://s.taobao.com/")
-        self.search()
+        try:
 
-        # 等待前端登录完成
-        self.wait_for_login()
-        #input("如出现滑块，请手动完成验证后按 Enter 继续...")
-
-        if self.page_start != 1:
-            self.multi_scroll_up_down(8, 8, -800, 800)
-            self.go_to_page(self.page_start)
-
-        for page in range(self.page_start, self.page_end + 1):
-            if self.count - 2 >= self.max_items:
-                self.logger.info(f"已抓取 {self.max_items} 个商品，停止抓取")
-                break
-
-            self.wait_if_paused()
-            # 每页开始前检测停止和暂停
-            if self.should_stop():
-                self.logger.info("用户选择终止爬虫，提前结束运行。")
-                break
+            self.driver.get("https://s.taobao.com/")
 
 
-            self.multi_scroll_up_down(8, 8, -800, 800)
+            self.search()
 
-            proceed = self.parse_page(page)
-            if not proceed:
+            # 等待前端登录完成
+            self.wait_for_login()
+            #input("如出现滑块，请手动完成验证后按 Enter 继续...")
+
+            # 初始化抓取的商品信息列表
+            self.all_warelists = []
+
+            # 循环遍历指定的页面范围
+            for page_number in range(self.page_start, self.page_end + 1):
+
+                #暂停检测
+                self.wait_if_paused()
+                #终止检测
                 if self.should_stop():
-                    self.logger.info(f"用户选择终止爬虫，提前结束运行。")
+                    self.logger.info("检测到终止命令")
                     break
-                else:
-                    self.logger.warning(f"第 {page} 页爬取失败，跳过该页。")
-                    continue
 
-            if page != self.page_end:
-                self.turn_page(page + 1)
+                self.logger.info(f"开始抓取第 {page_number} 页的数据...")
 
-        filename = f"{self.keyword}_{time.strftime('%Y%m%d-%H%M')}.xlsx"
-        # 使用硬编码路径
-        folder = "excel"  # 直接使用硬编码的路径
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-        # 构建完整的文件路径
-        filepath = os.path.join(folder, filename)
-        self.excel.save(filepath)
-        self.logger.info(f"数据已保存至：{filepath}")
+                # 调用 parse_page 进行数据抓取
+                result = self.parse_page(page_number)
+                # 根据返回的结果决定是否继续抓取
+                if result == 'max_reached':
+                    self.logger.info(f"已抓取 {self.max_items} 条商品数据，停止抓取...")
+                    break  # 达到最大数量，停止抓取
+                elif result == 'no_data':
+                    self.logger.info(f"第 {page_number} 页没有数据，跳过...")
+                    break  # 没有数据终止
+                elif result == 'error':
+                    self.logger.error(f"第 {page_number} 页抓取失败，跳过...")
+                elif result == 'finish':
+                    break  # 发生错误终止
+                self.human_sleep(1, 2)
 
-        self.clean_image_folder()
+            # 打印或处理抓取的商品数据
+            self.logger.info(f"共抓取到 {len(self.all_warelists)} 条商品数据")
+
+            data = self.all_warelists[:self.max_items]  # 只保留前 max_items 条数据
+            if data:
+                # 使用硬编码路径
+                filename = f"{self.keyword}_{time.strftime('%Y%m%d_%H%M')}.xlsx"
+                folder = "excel"  # 硬编码路径
+                if not os.path.exists(folder):
+                    os.makedirs(folder)  # 如果目录不存在，则创建
+
+                # 生成完整的文件路径
+                filepath = os.path.join(folder, filename)
+                self.download_all_images()  # 批量下载并更新图片路径
+                self.save_to_excel(data, filepath)  # 保存数据到 Excel
+            self.clean_image_folder()  # 清理图片缓存
+
+
+        except Exception as e:
+            # 记录详细的错误信息
+            self.logger.error(f"发生错误：{e}")
+
         self.driver.close()
         self.driver.quit()
-        self.logger.info("浏览器已关闭。")
+
 
 if __name__ == "__main__":
     keyword = input("输入搜索关键词：")

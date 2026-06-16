@@ -583,6 +583,7 @@ class JDScraper(BaseScraper):
                         warelist = data['wareList']
                         if warelist:  # 如果 wareList 不为空
                             for product in warelist:
+
                                 product_info = {
                                     'title': product.get('wareName', 'N/A'),
                                     'price': product.get('realPrice', 'N/A'),
