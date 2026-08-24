@@ -1,13 +1,4 @@
 # MySpider
-
-<p align="center">
-<b>E-commerce Product Data Collection & Automation Tool</b>
-</p>
-
-
-# 中文说明 🇨🇳
-
-
 ## 项目简介
 
 MySpider 是一个面向电商平台的数据采集与处理工具，支持：
@@ -577,7 +568,6 @@ Excel Export
 ---
 
 # Installation
-
 
 ```bash
 git clone https://github.com/JZIIIIII/PDD-Collection-Tool.git
